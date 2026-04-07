@@ -1,0 +1,3 @@
+[deploy]
+startCommand = "python run_bots.py"
+restartPolicyType = "always"
