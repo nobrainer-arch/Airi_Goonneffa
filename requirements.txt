@@ -1,5 +1,18 @@
+# Core Discord
+discord.py==2.4.0
+
+# Database
 asyncpg>=0.29.0
-python-dotenv>=1.0.0
-discord.py==2.3.2
+
+# HTTP
+aiohttp>=3.9.0
 requests>=2.31.0
+
+# Environment
 python-dotenv>=1.0.0
+
+# Image processing (for custom emoji spark effect)
+Pillow>=10.3.0
+
+# Utilities
+python-dateutil>=2.9.0

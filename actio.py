@@ -627,6 +627,18 @@ ACTIONS = {
         ]
     },
     "cum": {
+        "solo": [
+            "{author} cums hard while fucking themselves with a toy 💦",
+            "{author} reaches a powerful solo orgasm, body shaking 🌊",
+            "{author} explodes with pleasure during intense self-pleasure 😩",
+            "{author} makes a messy cum while riding their toy 🔥",
+            "{author} shudders through an intense solo climax 💥",
+            "{author} lets go and cums all over themselves 🥵",
+            "{author} finishes with a loud moan after deep self-fucking 🖤",
+            "{author} has a messy, satisfying solo orgasm 💦",
+            "{author} cums repeatedly during a long edging session 🌟",
+            "{author} floods the sheets after an explosive solo orgasm 😈"
+        ],
         "default": [
             "{author} cums hard while deep inside {target} 💦",
             "{author} reaches climax with {target} in ecstasy 🌊",
@@ -999,13 +1011,166 @@ ACTIONS = {
             "{author} titfucks {target} while looking at them 🫦",
             "{author} enjoys giving {target} a full chest massage with movement 🌸"
         ]
+    },
+
+    "yurifuck": {
+        "default": [
+            "{author} passionately fucks {target} with intense girl-on-girl energy 🥵",
+            "{author} grinds and thrusts against {target} in heated lesbian sex 😈",
+            "{author} makes love wildly to {target} with deep passion 💦",
+            "{author} dominates {target} in hot yuri-style fucking 🔥",
+            "{author} pleasures {target} thoroughly with sensual movements 🖤",
+            "{author} loses herself while fucking {target} hard 😩",
+            "{author} shares intense scissoring and thrusting with {target} 🌸",
+            "{author} fucks {target} until they're both moaning loudly 💕",
+            "{author} gives {target} mind-blowing yuri pleasure 🫦",
+            "{author} ravishes {target} with pure lesbian lust 😏"
+        ]
+    },
+
+    "futafuck": {
+        "default": [
+            "{author} fucks {target} hard with her big futa cock 😈",
+            "{author} pounds {target} deeply using her throbbing futanari dick 🥵",
+            "{author} breeds {target} passionately as her futa side takes over 💦",
+            "{author} rails {target} with powerful futa thrusts 🔥",
+            "{author} dominates {target} completely with her futanari cock 😩",
+            "{author} fills {target} up while fucking them as a futa 🖤",
+            "{author} enjoys rough and deep futafuck with {target} 🌙",
+            "{author} makes {target} take every inch of her futa dick 😏",
+            "{author} cums hard inside {target} while in futa mode 💢",
+            "{author} ravishes {target} with intense futanari passion 🔥"
+        ]
+    },
+
+    "yaoifuck": {
+        "default": [
+            "{author} fucks {target} passionately in hot yaoi style 😈",
+            "{author} pounds {target} deep with raw male-on-male desire 🥵",
+            "{author} rails {target} hard while lost in yaoi lust 💦",
+            "{author} dominates {target} with intense yaoi fucking 🔥",
+            "{author} makes {target} moan loudly during rough yaoi sex 😩",
+            "{author} breeds {target} with powerful thrusts 🖤",
+            "{author} enjoys passionate yaoi sex with {target} 🌙",
+            "{author} fucks {target} senseless in true yaoi fashion 😏",
+            "{author} claims {target} completely with yaoi energy 💢",
+            "{author} gives {target} an unforgettable yaoi pounding 🔥"
+        ]
+    },
+
+    "suckboobs": {
+        "default": [
+            "{author} leans in and sucks on {target}'s breasts gently 🍭",
+            "{author} licks and sucks {target}'s nipples with hunger 👅",
+            "{author} takes {target}'s boob into their mouth warmly 🥵",
+            "{author} sucks {target}'s chest lovingly and teasingly 😈",
+            "{author} swirls their tongue around {target}'s sensitive nipples 💦",
+            "{author} enjoys sucking {target}'s soft breasts passionately 🔥",
+            "{author} sucks harder while moaning softly against {target}'s chest 😏",
+            "{author} gives {target} long, wet sucks on their boobs 🌸",
+            "{author} worships {target}'s chest with eager mouth and tongue 💕",
+            "{author} sucks on {target}'s nipples until they’re moaning loudly 🫦"
+        ]
+    },
+
+    "lickdick": {
+        "default": [
+            "{author} gives {target}'s cock a long, slow lick 👅",
+            "{author} runs their tongue teasingly along {target}'s length 🍭",
+            "{author} licks {target} from base to tip with wet warmth 💧",
+            "{author} swirls their tongue around the head playfully 😈",
+            "{author} gives {target} hungry, eager licks 🥵",
+            "{author} trails wet kisses and licks all over {target}'s dick 😋",
+            "{author} licks {target} affectionately then more intensely 💕",
+            "{author} worships {target} with long sensual licks 🔥",
+            "{author} teases the tip with quick little licks 😏",
+            "{author} leaves {target} throbbing after thorough licking 🌊"
+        ]
+    },
+
+    "handjob": {
+        "default": [
+            "{author} wraps their hand around {target} and strokes slowly 🖐️",
+            "{author} gives {target} a teasing, skillful handjob 😏",
+            "{author} pumps {target} with a firm and loving grip 💦",
+            "{author} strokes {target} faster while watching their reaction 🥵",
+            "{author} pleasures {target} with expert hand movements 🔥",
+            "{author} gives {target} a long, sensual handjob 😈",
+            "{author} twists and strokes {target} rhythmically 😩",
+            "{author} milks {target} with smooth, wet strokes 🌊",
+            "{author} teases the tip while giving {target} a handjob 🫦",
+            "{author} makes {target} moan loudly with their skilled hands 💕"
+        ]
+    },
+
+    "footjob": {
+        "default": [
+            "{author} uses her soft feet to stroke {target} teasingly 🦶",
+            "{author} gives {target} a sensual footjob with skilled toes 😏",
+            "{author} rubs {target} between her soles slowly 🥵",
+            "{author} pleasures {target} with her pretty feet 💦",
+            "{author} strokes {target} rhythmically using both feet 🔥",
+            "{author} teases the tip with her toes while giving a footjob 🫦",
+            "{author} gives {target} a long, slippery footjob 😈",
+            "{author} milks {target} with smooth foot movements 🌊",
+            "{author} wraps her feet around {target} and pumps gently 💕",
+            "{author} makes {target} throb using her cute feet 😋"
+        ]
+    },
+
+    "finger": {
+        "solo": [
+            "{author} slides their fingers gently into themselves 😳",
+            "{author} fingers their own hole slowly and teasingly 🥵",
+            "{author} curls their fingers inside while moaning softly 💦",
+            "{author} fingers themselves faster, chasing pleasure 😩",
+            "{author} pleasures their insides deeply with skilled fingers 🔥",
+            "{author} uses two or three fingers to stretch themselves 😈",
+            "{author} fingers rhythmically while rubbing their clit 🫦",
+            "{author} makes themselves wetter with expert solo fingering 💕",
+            "{author} teases their sensitive spot while fingering 🌸",
+            "{author} fingers themselves until their legs shake with pleasure 🌊"
+        ],
+        "default": [
+            "{author} slides their fingers gently into {target} 😳",
+            "{author} fingers {target} slowly and teasingly 🥵",
+            "{author} curls their fingers inside {target} skillfully 💦",
+            "{author} fingers {target} faster while watching them moan 😩",
+            "{author} pleasures {target} deeply with their fingers 🔥",
+            "{author} uses two fingers to stretch and please {target} 😈",
+            "{author} fingers {target} rhythmically and passionately 🫦",
+            "{author} makes {target} wetter with expert fingering 💕",
+            "{author} teases {target}'s spot while fingering them 🌸",
+            "{author} fingers {target} until they're shaking with pleasure 🌊"
+        ]
+    },
+
+    "squirt": {
+        "solo": [
+            "{author} fingers themselves until they squirt hard 💦",
+            "{author} makes themselves gush with intense solo play 🌊",
+            "{author} brings themselves to a powerful squirting orgasm 🥵",
+            "{author} squirts messily all over while moaning loudly 😈",
+            "{author} keeps going until they squirt again and again 🔥",
+            "{author} pushes themselves over the edge into a huge squirt 💢",
+            "{author} cums and squirts at the same time with pleasure 😩",
+            "{author} soaks the sheets during an explosive solo squirt 🌟",
+            "{author} loves making themselves squirt everywhere 😏",
+            "{author} has a long, soaking wet solo squirting session 💕"
+        ],
+        "default": [
+            "{author} makes {target} squirt hard with intense pleasure 💦",
+            "{author} fingers/fucks {target} until they squirt everywhere 🌊",
+            "{author} brings {target} to a powerful squirting orgasm 🥵",
+            "{author} watches {target} squirt messily with satisfaction 😈",
+            "{author} keeps going until {target} squirts again and again 🔥",
+            "{author} makes {target} gush with skilled movements 💢",
+            "{author} causes {target} to squirt while moaning loudly 😩",
+            "{author} pleasures {target} to a soaking wet squirt 🌟",
+            "{author} loves making {target} squirt all over 😏",
+            "{author} pushes {target} over the edge into a huge squirt 💕"
+        ]
     }
 }
 
-ACTIONS_SOLO = {
-    "huger": [
-        "{author} gives themselves a warm hug 🤗",
-        "{author} wraps their arms around themselves 💞",
-        "{author} hugs themselves tightly 🫂"
-    ]
-}
+ACTIONS_SOLO = {}

@@ -73,8 +73,7 @@ ALIASES: dict[str, list[str]] = {
     "cuddle":       ["spoon"],
     "bondage":      ["tie", "bind", "restrain", "rope", "bdsm"],
     "spank":        ["slapass", "smack", "spanking", "spanks"],
-    "blowjob":      ["bj", "head", "fellatio", "blow", "oral"],
-    "suck":         ["sucky", "sucking"],
+    "blowjob":      ["bj", "head", "fellatio", "blow", "oral","sucking"],
     "pussyeat":     ["eat", "eatout", "munch", "cunnilingus", "lickpussy"],
     "titjob":       ["titfuck", "boobjob", "paizuri", "titf"],
     "fuck":         ["sex", "screw", "smash", "rail", "pound", "plow", "dick"],
@@ -89,6 +88,7 @@ ALIASES: dict[str, list[str]] = {
     "gangbang":     ["gb", "gang", "train", "runatrain"],
     "fap":          ["masturbate", "jerkoff", "jackoff", "wank", "fapfap", "touchself"],
     "kiss":         ["smooch", "peck", "makeout"],
+    "footjob":      ["footfuck"]
 }
 
 # ── Flat alias lookup: alias → canonical name ─────────────────────
