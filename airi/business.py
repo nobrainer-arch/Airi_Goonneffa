@@ -173,7 +173,7 @@ class BusinessCog(commands.Cog, name="Business"):
             ))
         info = BIZ_TYPES[biz["type"]]
         now  = datetime.utcnow()
-        last = biz["last_collected"]
+        last = biz.get("last_collected")
         hours_since = (now - last).total_seconds() / 3600 if last else 0
         ready = hours_since >= 1.0
 
@@ -187,7 +187,7 @@ class BusinessCog(commands.Cog, name="Business"):
         e.set_footer(text="!collect to collect income · !upgrade to level up · !hire @user to add manager")
         await ctx.send(embed=e)
 
-    @commands.command()
+    @commands.hybrid_command()
     async def collect(self, ctx):
         """Collect your business income."""
         if not await check_channel(ctx, "business"): return
@@ -283,7 +283,7 @@ class BusinessCog(commands.Cog, name="Business"):
         )
         await ctx.send(embed=e, view=UpgradeView())
 
-    @commands.command()
+    @commands.hybrid_command()
     async def hire(self, ctx, member: discord.Member = None):
         """Hire a manager. Shows picker if no @ given."""
         if not await check_channel(ctx, "business"): return
@@ -319,7 +319,7 @@ class BusinessCog(commands.Cog, name="Business"):
             color=C_BUSINESS
         ))
 
-    @commands.command()
+    @commands.hybrid_command()
     async def sellbiz(self, ctx):
         """Sell your business for 60% of startup cost."""
         if not await check_channel(ctx, "business"): return
@@ -358,7 +358,7 @@ class BusinessCog(commands.Cog, name="Business"):
             view=SellView()
         )
 
-    @commands.command()
+    @commands.hybrid_command()
     async def listbiz(self, ctx):
         """See all businesses in this server."""
         if not await check_channel(ctx, "business"): return

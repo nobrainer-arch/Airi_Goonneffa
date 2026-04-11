@@ -7,6 +7,7 @@ load_dotenv()
 # ── Tokens ────────────────────────────────────────────────────────
 AIRI_TOKEN = os.getenv("AIRI_TOKEN")
 GOON_TOKEN = os.getenv("GOON_TOKEN")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 # ── IDs ───────────────────────────────────────────────────────────
 AIRI_ID       = int(os.getenv("AIRI_ID", 0))

@@ -72,7 +72,7 @@ async def add_kakera(guild_id: int, user_id: int, amount: int) -> int:
 class KakeraCog(commands.Cog, name="Kakera"):
     def __init__(self, bot): self.bot = bot
 
-    @commands.command(aliases=["kak", "k"])
+    @commands.hybrid_command(aliases=["kak", "k"])
     async def kakera(self, ctx, member: discord.Member = None):
         """Check your kakera balance."""
         target = member or ctx.author
@@ -87,7 +87,7 @@ class KakeraCog(commands.Cog, name="Kakera"):
         e.set_footer(text="Earn kakera from milestones, duplicate gacha pulls, and achievements.")
         await ctx.send(embed=e)
 
-    @commands.command(aliases=["kshop", "kakshop"])
+    @commands.hybrid_command(aliases=["kshop", "kakshop"])
     async def kakeashop(self, ctx):
         """Browse the kakera shop."""
         gid, uid = ctx.guild.id, ctx.author.id

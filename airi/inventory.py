@@ -42,7 +42,8 @@ async def remove_item(guild_id, user_id, item_key, qty=1) -> bool:
             "SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",
             guild_id, user_id, item_key
         )
-        if not row or row["quantity"] < qty: return False
+        if not row or row["quantity"] < qty:
+            return False
         if row["quantity"] == qty:
             await conn.execute("DELETE FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3", guild_id, user_id, item_key)
         else:
@@ -62,23 +63,7 @@ async def get_inventory(guild_id, user_id) -> list[dict]:
     return result
 
 
-# ── Embed builders ─────────────────────────────────────────────────
-
-def _build_inv_embed(chunk: list[dict], target: discord.Member, page: int, total_pages: int) -> discord.Embed:
-    tname = target.display_name if target else f"<@{target.id if target else 'Unknown'}>"
-    e = discord.Embed(
-        title=f"📦 {tname}'s Inventory",
-        description="\n".join([
-            f"{RARITY_STAR.get(it['rarity'], '⬜')} **{it['name']}** ×{it['qty']}"
-            for it in chunk
-        ]) or "No items on this page.",
-        color=C_GACHA
-    )
-    if total_pages > 1:
-        e.set_footer(text=f"Page {page + 1}/{total_pages}")
-    return e
-
-# ── Item action buttons ────────────────────────────────────────────
+# ── Item usage ─────────────────────────────────────────────────────
 
 async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_key: str):
     """Apply an item's effect. Called from Use button."""
@@ -140,9 +125,24 @@ async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_k
     await interaction.followup.send(msg, ephemeral=True)
 
 
-class InventoryView(discord.ui.View):
-    """Per-item action buttons: Use | List in AH | Sell (quick)."""
+# ── Inventory pagination view ─────────────────────────────────────
 
+INV_PAGE_SIZE = 10
+
+def _build_inv_embed(items: list[dict], target: discord.Member, page: int, total_pages: int) -> discord.Embed:
+    tname = target.display_name if target else "Unknown"
+    e = discord.Embed(
+        title=f"{tname}'s Inventory",
+        description=f"Page {page + 1}/{total_pages}",
+        color=C_GACHA
+    )
+    for item in items:
+        star = RARITY_STAR.get(item.get("rarity", "common"), "⬜")
+        e.add_field(name=f"{star} {item['name']}", value=f"×{item['qty']}", inline=True)
+    return e
+
+
+class InventoryView(discord.ui.View):
     def __init__(self, items: list[dict], gid: int, uid: int, page: int, total_pages: int, bot):
         super().__init__(timeout=180)
         self._gid   = gid
@@ -152,7 +152,6 @@ class InventoryView(discord.ui.View):
         self._bot   = bot
         self._items = items
 
-        # Item dropdown
         if items:
             sel = discord.ui.Select(
                 placeholder="Select an item to act on...",
@@ -169,7 +168,6 @@ class InventoryView(discord.ui.View):
             sel.callback = self._item_selected
             self.add_item(sel)
 
-        # Page buttons
         if total_pages > 1:
             prev = discord.ui.Button(label="◀ Prev", style=discord.ButtonStyle.secondary, custom_id="inv_prev", disabled=(page == 0))
             next_ = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, custom_id="inv_next", disabled=(page == total_pages - 1))
@@ -181,101 +179,70 @@ class InventoryView(discord.ui.View):
     async def _item_selected(self, interaction: discord.Interaction):
         if interaction.user.id != self._uid:
             return await interaction.response.send_message("Not for you.", ephemeral=True)
-        key  = interaction.data["values"][0]
+        key = interaction.data["values"][0]
         info = ITEMS.get(key, {})
         tradable = info.get("tradable", False)
+        qty = await get_quantity(self._gid, self._uid, key)
 
+        # Action buttons for this item (Use / Sell)
         class ItemActionView(discord.ui.View):
-            def __init__(self_, key_, tradable_):
+            def __init__(self_, key_, tradable_, gid_, uid_):
                 super().__init__(timeout=60)
                 self_._key = key_
                 self_._tradable = tradable_
+                self_._gid = gid_
+                self_._uid = uid_
 
             @discord.ui.button(label="▶️ Use", style=discord.ButtonStyle.success)
             async def use_btn(self_, inter, btn):
-                if inter.user.id != self._uid:
+                if inter.user.id != self_._uid:
                     return await inter.response.send_message("Not for you.", ephemeral=True)
-                for item in self_.children: item.disabled = True
+                for child in self_.children:
+                    child.disabled = True
                 await inter.response.defer(ephemeral=True)
-                await _use_item(inter, self._gid, self._uid, self_._key)
+                await _use_item(inter, self_._gid, self_._uid, self_._key)
 
-            @discord.ui.button(label="🏪 List in AH", style=discord.ButtonStyle.primary)
-            async def list_btn(self_, inter, btn):
-                if inter.user.id != self._uid:
+            @discord.ui.button(label="💰 Sell", style=discord.ButtonStyle.primary)
+            async def sell_btn(self_, inter, btn):
+                if inter.user.id != self_._uid:
                     return await inter.response.send_message("Not for you.", ephemeral=True)
                 if not self_._tradable:
                     await inter.response.send_message("❌ This item cannot be traded.", ephemeral=True)
                     return
-                # Open a modal to get price / qty / optional min_bid
-                class ListModal(discord.ui.Modal, title="List in Auction House"):
+
+                class SellModal(discord.ui.Modal, title="Sell Item"):
                     price_in = discord.ui.TextInput(label="Buyout price (coins)", placeholder="e.g. 2000", required=True)
                     qty_in   = discord.ui.TextInput(label="Quantity", placeholder="1", default="1", required=False)
                     bid_in   = discord.ui.TextInput(label="Start bid (blank = buyout only)", placeholder="e.g. 500", required=False)
 
                     async def on_submit(self__, inter2):
-                        raw_price = self__.price_in.value.strip().replace(",","")
-                        raw_qty   = self__.qty_in.value.strip() or "1"
-                        raw_bid   = self__.bid_in.value.strip().replace(",","")
-                        if not raw_price.isdigit() or not raw_qty.isdigit():
-                            await inter2.response.send_message("❌ Enter valid numbers.", ephemeral=True)
-                            return
-                        price = int(raw_price); qty = int(raw_qty)
-                        min_bid = int(raw_bid) if raw_bid.isdigit() else None
-                        if min_bid and min_bid >= price:
-                            await inter2.response.send_message("❌ Bid start must be less than buyout.", ephemeral=True)
-                            return
-                        # Check market channel and redirect
-                        gid_ = self._gid
-                        uid_ = self._uid
-                        market_ch_id = await get_market_channel(gid_)
-                        target_ch = self._bot.get_channel(market_ch_id) if market_ch_id else inter2.channel
-                        if target_ch and target_ch.id != inter2.channel_id:
-                            await inter2.response.send_message(
-                                f"⚠️ Listings go in {target_ch.mention}. Head there and your item was NOT listed yet.",
-                                ephemeral=True
-                            )
-                            return
-                        # Check owned qty
-                        owned = await get_quantity(gid_, uid_, self_._key)
-                        if owned < qty:
-                            await inter2.response.send_message(f"❌ You only have ×{owned}.", ephemeral=True)
-                            return
-                        # Remove from inventory, post listing
-                        from airi.auction_house import _listing_embed, ListingActionView
-                        item_info = ITEMS[self_._key]
-                        from datetime import datetime, timedelta
-                        await remove_item(gid_, uid_, self_._key, qty)
-                        expires = datetime.utcnow() + timedelta(hours=48)
-                        row = await db.pool.fetchrow("""
-                            INSERT INTO auction_house
-                                (guild_id,seller_id,item_key,item_name,rarity,quantity,price,min_bid,expires_at)
-                            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id
-                        """, gid_, uid_, self_._key, item_info["name"], item_info["rarity"], qty, price, min_bid, expires)
-                        lid     = row["id"]
-                        full_row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1", lid)
-                        has_bid  = min_bid is not None
-                        av       = ListingActionView(lid, gid_, uid_, has_bid, price, min_bid)
-                        e        = _listing_embed(full_row, inter2.guild)
-                        msg      = await target_ch.send(embed=e, view=av)
-                        await db.pool.execute(
-                            "UPDATE auction_house SET listing_message_id=$1,listing_channel_id=$2 WHERE id=$3",
-                            msg.id, target_ch.id, lid
-                        )
-                        await inter2.response.send_message(
-                            f"✅ Listed **{item_info['name']} ×{qty}** for **{price:,}** coins in {target_ch.mention}!",
-                            ephemeral=True
-                        )
+                        try:
+                            raw_price = self__.price_in.value.strip().replace(",","")
+                            raw_qty   = self__.qty_in.value.strip() or "1"
+                            raw_bid   = self__.bid_in.value.strip().replace(",","")
+                            if not raw_price.isdigit() or not raw_qty.isdigit():
+                                await inter2.response.send_message("❌ Enter valid numbers.", ephemeral=True)
+                                return
+                            price = int(raw_price)
+                            qty = int(raw_qty)
+                            min_bid = int(raw_bid) if raw_bid.isdigit() else None
+                            if min_bid and min_bid >= price:
+                                await inter2.response.send_message("❌ Starting bid must be less than buyout.", ephemeral=True)
+                                return
+                            from airi.auction_house import _do_sell
+                            await _do_sell(inter2, self_._gid, self_._uid, self_._key, price, qty, min_bid)
+                        except Exception as e:
+                            print(f"Sell error: {e}")
+                            await inter2.response.send_message(f"❌ Error: {str(e)[:100]}", ephemeral=True)
 
-                await inter.response.send_modal(ListModal())
+                await inter.response.send_modal(SellModal())
 
-        name = info.get("name", key)
-        qty  = await get_quantity(self._gid, self._uid, key)
-        e = discord.Embed(
-            title=f"{RARITY_STAR.get(info.get('rarity','common'),'⬜')} {name} ×{qty}",
+        embed = discord.Embed(
+            title=f"{RARITY_STAR.get(info.get('rarity','common'),'⬜')} {info.get('name', key)} ×{qty}",
             description=f"Rarity: **{info.get('rarity','?').title()}**\nTradable: {'✅' if tradable else '❌'}",
             color=C_GACHA
         )
-        await interaction.response.send_message(embed=e, view=ItemActionView(key, tradable), ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=ItemActionView(key, tradable, self._gid, self._uid), ephemeral=True)
 
     async def _prev(self, interaction: discord.Interaction):
         if interaction.user.id != self._uid:
@@ -290,19 +257,17 @@ class InventoryView(discord.ui.View):
         await self._go_page(interaction, new_page)
 
     async def _go_page(self, interaction: discord.Interaction, new_page: int):
-        items  = await get_inventory(self._gid, self._uid)
-        pages  = [items[i:i+INV_PAGE_SIZE] for i in range(0, max(len(items),1), INV_PAGE_SIZE)]
+        items = await get_inventory(self._gid, self._uid)
+        pages = [items[i:i+INV_PAGE_SIZE] for i in range(0, max(len(items),1), INV_PAGE_SIZE)]
         new_page = max(0, min(new_page, len(pages)-1))
-        chunk  = pages[new_page]
+        chunk = pages[new_page]
         target = interaction.guild.get_member(self._uid)
-        e      = _build_inv_embed(chunk, target, new_page, len(pages))
-        view   = InventoryView(chunk, self._gid, self._uid, new_page, len(pages), self._bot)
-        # Use edit_message — this is a button callback on the same message
-        await interaction.response.edit_message(embed=e, view=view)
+        embed = _build_inv_embed(chunk, target, new_page, len(pages))
+        view = InventoryView(chunk, self._gid, self._uid, new_page, len(pages), self._bot)
+        await interaction.response.edit_message(embed=embed, view=view)
 
 
-INV_PAGE_SIZE = 10
-
+# ── Cog ───────────────────────────────────────────────────────────
 
 class InventoryCog(commands.Cog, name="Inventory"):
     def __init__(self, bot):
@@ -310,76 +275,61 @@ class InventoryCog(commands.Cog, name="Inventory"):
 
     @commands.command(aliases=["inv", "items"])
     async def inventory(self, ctx, member: discord.Member = None):
-        if not await check_channel(ctx, "economy"): return
+        if not await check_channel(ctx, "economy"):
+            return
         target = member or ctx.author
-        await self._show_inv(ctx, target.guild.id, target.id, 0, ctx)
+        gid = ctx.guild.id
+        uid = target.id
 
-    async def _show_inv(self, ctx_or_inter, gid, uid, page, orig_ctx=None):
         items = await get_inventory(gid, uid)
         if not items:
-            target = (orig_ctx or ctx_or_inter).guild.get_member(uid)
-            name   = target.display_name if target else f"<@{uid}>"
-            if hasattr(ctx_or_inter, "send"):
-                return await ctx_or_inter.send(embed=discord.Embed(
-                    description=("Your" if uid == ctx_or_inter.author.id else name + "'s") + " inventory is empty.",
-                    color=C_GACHA
-                ))
+            name = target.display_name if target else f"<@{uid}>"
+            await ctx.send(embed=discord.Embed(
+                description=("Your" if uid == ctx.author.id else f"{name}'s") + " inventory is empty.",
+                color=C_GACHA
+            ))
             return
 
         pages = [items[i:i+INV_PAGE_SIZE] for i in range(0, len(items), INV_PAGE_SIZE)]
-        page  = max(0, min(page, len(pages) - 1))
+        page = 0
         chunk = pages[page]
-
-        guild  = (orig_ctx or ctx_or_inter).guild
-        target = guild.get_member(uid)
-        tname  = target.display_name if target else f"<@{uid}>"
-
-        e = _build_inv_embed(chunk, target, page, len(pages))
-
+        embed = _build_inv_embed(chunk, target, page, len(pages))
         view = InventoryView(chunk, gid, uid, page, len(pages), self.bot)
+        await ctx.send(embed=embed, view=view)
 
-        if hasattr(ctx_or_inter, "send"):
-            await ctx_or_inter.send(embed=e, view=view)
-        else:
-            # It's an interaction — just edit the original response
-            try:
-                await ctx_or_inter.edit_original_response(embed=e, view=view)
-            except Exception:
-                pass
-
-    @commands.command()
+    @commands.hybrid_command()
     async def use(self, ctx, item_key: str):
-        """Directly use an item by key (e.g. !use xp_boost_1h). Prefer using inventory buttons."""
-        if not await check_channel(ctx, "economy"): return
+        """Directly use an item by key (e.g. !use xp_boost_1h)."""
+        if not await check_channel(ctx, "economy"):
+            return
         item_key = item_key.lower().strip()
         if item_key not in ITEMS:
             return await _err(ctx, f"Unknown item `{item_key}`. Check `!inventory`.")
 
-        class UseConfirmView(discord.ui.View):
+        qty = await get_quantity(ctx.guild.id, ctx.author.id, item_key)
+        if qty == 0:
+            return await _err(ctx, f"You don't have **{ITEMS[item_key]['name']}**.")
+
+        class ConfirmView(discord.ui.View):
             def __init__(self_):
                 super().__init__(timeout=30)
-
             @discord.ui.button(label="Use", style=discord.ButtonStyle.success)
             async def use_btn(self_, inter, btn):
                 if inter.user.id != ctx.author.id:
                     return await inter.response.send_message("Not for you.", ephemeral=True)
-                for item in self_.children: item.disabled = True
+                for child in self_.children:
+                    child.disabled = True
                 await inter.response.defer(ephemeral=True)
                 await _use_item(inter, ctx.guild.id, ctx.author.id, item_key)
-                self_.stop()
-
             @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
             async def cancel_btn(self_, inter, btn):
-                for item in self_.children: item.disabled = True
+                for child in self_.children:
+                    child.disabled = True
                 await inter.response.edit_message(content="Cancelled.", view=self_)
-                self_.stop()
 
-        info = ITEMS[item_key]
-        qty  = await get_quantity(ctx.guild.id, ctx.author.id, item_key)
-        if qty == 0: return await _err(ctx, f"You don't have **{info['name']}**.")
-        e = discord.Embed(
-            title=f"Use {info['name']}?",
+        embed = discord.Embed(
+            title=f"Use {ITEMS[item_key]['name']}?",
             description=f"You have ×{qty}. This will consume 1.",
             color=C_GACHA
         )
-        await ctx.send(embed=e, view=UseConfirmView())
+        await ctx.send(embed=embed, view=ConfirmView())

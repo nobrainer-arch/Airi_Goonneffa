@@ -63,7 +63,7 @@ class SetupCog(commands.Cog, name="Setup"):
         self.bot     = bot
         self._active: dict[int, bool] = {}
 
-    @commands.command(name="setup")
+    @commands.hybrid_command(name="setup")
     @commands.has_permissions(manage_guild=True)
     async def setup(self, ctx):
         """GUI-driven server setup. Re-runnable any time."""

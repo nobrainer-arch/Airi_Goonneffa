@@ -1,184 +1,118 @@
-# airi/anilist.py — AniList + Jikan API for character fetching
-# Fetches real anime characters with popularity data for rarity assignment.
-# Popular chars (high favourites) = rarer. One-user-only for Legendary/Mythic.
+# airi/anilist.py — AniList character fetching with media + description
 import aiohttp
-import random
 import asyncio
-import db
-from datetime import datetime
+import random
 
 ANILIST_URL = "https://graphql.anilist.co"
-JIKAN_URL   = "https://api.jikan.moe/v4"
+HEADERS = {
+    "Content-Type": "application/json",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+}
 
-# Rarity thresholds based on AniList favourites count
-def favourites_to_rarity(fav: int) -> str:
-    if fav >= 15000: return "mythic"
-    if fav >= 7000:  return "legendary"
-    if fav >= 3000:  return "epic"
-    if fav >= 1000:  return "rare"
-    return "common"
-
-
-# ── AniList queries ────────────────────────────────────────────────
-CHAR_QUERY = """
-query ($page: Int, $perPage: Int, $isFemale: Boolean) {
+QUERY = """
+query ($page: Int, $perPage: Int) {
   Page(page: $page, perPage: $perPage) {
     characters(sort: FAVOURITES_DESC) {
       id
       name { full }
-      image { large }
-      favourites
       gender
-      media(sort: POPULARITY_DESC, perPage: 1) {
-        nodes { title { english romaji } }
+      favourites
+      image { large }
+      description(asHtml: false)
+      media(perPage: 1) {
+        nodes {
+          title { romaji english native }
+          type
+        }
       }
     }
   }
 }
 """
 
-async def _anilist_fetch(page: int = 1, per_page: int = 50,
-                         session: aiohttp.ClientSession | None = None) -> list[dict]:
-    """Fetch characters from AniList, sorted by favourites."""
-    own_session = session is None
-    if own_session:
-        session = aiohttp.ClientSession()
+def _favourites_to_rarity(fav: int) -> str:
+    if fav >= 20000: return "mythic"
+    if fav >= 8000:  return "legendary"
+    if fav >= 3000:  return "epic"
+    if fav >= 1000:  return "rare"
+    return "common"
+
+def _parse(c: dict, gender_filter: str) -> dict | None:
+    gender = (c.get("gender") or "").lower()
+    if gender_filter == "female" and "female" not in gender: return None
+    if gender_filter == "male"   and "male"   not in gender: return None
+    fav    = c.get("favourites", 0)
+    media  = c.get("media", {}).get("nodes", [])
+    series = ""
+    if media:
+        t = media[0].get("title", {})
+        series = t.get("english") or t.get("romaji") or t.get("native") or "Unknown"
+    bio = (c.get("description") or "").replace("\n", " ").strip()
+    if len(bio) > 200: bio = bio[:197] + "…"
+    return {
+        "id":         c.get("id"),
+        "name":       c.get("name", {}).get("full", "Unknown"),
+        "image":      c.get("image", {}).get("large", ""),
+        "favourites": fav,
+        "gender":     gender_filter,
+        "rarity":     _favourites_to_rarity(fav),
+        "series":     series or "Unknown",
+        "bio":        bio,
+    }
+
+async def _fetch_page(session: aiohttp.ClientSession, page: int) -> list | None:
     try:
         async with session.post(
             ANILIST_URL,
-            json={"query": CHAR_QUERY, "variables": {"page": page, "perPage": per_page}},
-            timeout=aiohttp.ClientTimeout(total=10),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            json={"query": QUERY, "variables": {"page": page, "perPage": 50}},
+            timeout=aiohttp.ClientTimeout(total=12),
+            headers=HEADERS,
         ) as r:
             if r.status == 200:
                 data = await r.json()
                 return data.get("data", {}).get("Page", {}).get("characters", [])
+            if r.status == 429:
+                return None   # rate-limited
     except Exception as e:
-        print(f"AniList fetch error: {e}")
-    finally:
-        if own_session:
-            await session.close()
+        print(f"AniList p{page}: {e}")
     return []
 
+async def fetch_characters_for_board(gender: str = "female") -> dict:
+    """
+    Returns buckets:
+      mythic/legendary/epic/rare/common  → lists
+      all       → up to 90 total
+      rate_limited → bool
+    Targets: 2 mythic, 5 legendary, 15 epic, 30 rare, 38 common  (= 90)
+    """
+    targets = {"mythic":2,"legendary":5,"epic":15,"rare":30,"common":38}
+    buckets: dict[str,list] = {k:[] for k in targets}
+    page = 1; requests_used = 0; rate_limited = False
 
-async def _jikan_fetch(page: int = 1) -> list[dict]:
-    """Fallback: fetch from Jikan (MAL) if AniList fails."""
     session = aiohttp.ClientSession()
     try:
-        async with session.get(
-            f"{JIKAN_URL}/characters",
-            params={"order_by": "favorites", "sort": "desc", "page": page},
-            timeout=aiohttp.ClientTimeout(total=10),
-        ) as r:
-            if r.status == 200:
-                data = await r.json()
-                raw = data.get("data", [])
-                chars = []
-                for c in raw:
-                    chars.append({
-                        "id":         c.get("mal_id"),
-                        "name":       c.get("name", "Unknown"),
-                        "image":      c.get("images", {}).get("jpg", {}).get("image_url", ""),
-                        "favourites": c.get("favorites", 0),
-                        "gender":     None,
-                        "series":     c.get("anime", [{}])[0].get("title") if c.get("anime") else "Unknown",
-                    })
-                return chars
-    except Exception as e:
-        print(f"Jikan fetch error: {e}")
+        while requests_used < 90:
+            result = await _fetch_page(session, page)
+            requests_used += 1
+            if result is None:            # rate-limited
+                rate_limited = True; break
+            for c in result:
+                p = _parse(c, gender)
+                if not p: continue
+                r = p["rarity"]
+                if len(buckets[r]) < targets.get(r, 0):
+                    buckets[r].append(p)
+            needed = sum(max(0, targets[r] - len(buckets[r])) for r in targets)
+            if needed == 0: break
+            page += 1
+            await asyncio.sleep(0.7)
     finally:
         await session.close()
-    return []
 
-
-def _parse_anilist(raw: list[dict]) -> list[dict]:
-    chars = []
-    for c in raw:
-        name  = c.get("name", {}).get("full", "Unknown")
-        image = c.get("image", {}).get("large", "")
-        fav   = c.get("favourites", 0)
-        gender = c.get("gender") or "female"
-        media = c.get("media", {}).get("nodes", [{}])
-        series = ""
-        if media:
-            t = media[0].get("title", {})
-            series = t.get("english") or t.get("romaji") or "Unknown"
-        chars.append({
-            "id":         c.get("id"),
-            "name":       name,
-            "image":      image,
-            "favourites": fav,
-            "gender":     gender.lower() if gender else "female",
-            "series":     series,
-            "rarity":     favourites_to_rarity(fav),
-            "source":     "anilist",
-        })
-    return chars
-
-
-async def fetch_characters(count: int = 50, gender: str = "female") -> list[dict]:
-    """Fetch `count` characters of given gender. Falls back to Jikan if AniList fails."""
-    chars = []
-    page  = 1
-    while len(chars) < count and page <= 5:
-        raw = await _anilist_fetch(page=page, per_page=50)
-        if not raw:
-            raw_j = await _jikan_fetch(page=page)
-            if raw_j:
-                # Jikan doesn't have gender — assign female for waifu, male for husbando
-                for c in raw_j:
-                    c["gender"] = gender
-                    c["rarity"] = favourites_to_rarity(c.get("favourites", 0))
-                    c["source"] = "jikan"
-                chars.extend(raw_j)
-            break
-        parsed = _parse_anilist(raw)
-        # Filter by gender (AniList often has null gender for non-binary/unknown)
-        filtered = [c for c in parsed if (c["gender"] or "female") == gender or c["gender"] in (None, "")]
-        chars.extend(filtered)
-        page += 1
-        await asyncio.sleep(0.5)  # rate limit
-
-    random.shuffle(chars)
-    return chars[:count]
-
-
-# ── Image ownership: Legendary/Mythic = one user only ─────────────
-async def is_char_taken(guild_id: int, char_source_id: int, rarity: str) -> int | None:
-    """For legendary/mythic chars, returns the owner_id if already claimed. None otherwise."""
-    if rarity not in ("legendary", "mythic"):
-        return None
-    row = await db.pool.fetchrow("""
-        SELECT owner_id FROM anime_waifus
-        WHERE guild_id=$1 AND source_id=$2 AND rarity=$3
-        LIMIT 1
-    """, guild_id, char_source_id, rarity)
-    return row["owner_id"] if row else None
-
-
-async def ensure_char_columns():
-    """Add source_id column to anime_waifus if not present (run once on startup)."""
-    try:
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS source_id INTEGER"
-        )
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS series TEXT DEFAULT 'Unknown'"
-        )
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS gender TEXT DEFAULT 'female'"
-        )
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS favourites INTEGER DEFAULT 0"
-        )
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS personality_tag TEXT"
-        )
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS card_wrap TEXT DEFAULT 'default'"
-        )
-        await db.pool.execute(
-            "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS affection INTEGER DEFAULT 0"
-        )
-    except Exception as e:
-        print(f"anilist ensure_columns: {e}")
+    all_chars = []
+    for r in ("mythic","legendary","epic","rare","common"):
+        all_chars.extend(buckets[r])
+    buckets["all"] = all_chars[:90]
+    buckets["rate_limited"] = rate_limited
+    buckets["requests_used"] = requests_used
+    return buckets

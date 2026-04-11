@@ -6,7 +6,7 @@ import random
 import config
 import db
 from airi.economy import is_xp_boosted, add_coins
-from airi.guild_config import get_levelup_channel, get_channels, K_XP
+from airi.guild_config import get_channel, get_channels, K_XP, K_LEVELUP
 
 XP_MIN      = 15
 XP_MAX      = 25
@@ -93,11 +93,11 @@ class XPCog(commands.Cog, name="XP"):
             if title:
                 embed.set_footer(text=f"✨ {title}")
 
-            levelup_ch_id = await get_levelup_channel(gid)
-            target_ch     = self.bot.get_channel(levelup_ch_id) if levelup_ch_id else message.channel
+            levelup_ch_id = await get_channel(gid, K_LEVELUP)
+            target_ch = self.bot.get_channel(levelup_ch_id) if levelup_ch_id else message.channel
             await target_ch.send(embed=embed)
 
-    @commands.command(aliases=["rank", "xp", "level"])
+    @commands.hybrid_command(aliases=["rank", "xp", "level"])
     async def rankcard(self, ctx, member: discord.Member = None):
         target = member or ctx.author
         gid, uid = ctx.guild.id, target.id

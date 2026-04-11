@@ -2,7 +2,10 @@
 # Gender preferences backed by PostgreSQL.
 # In-memory cache still used so we don't hit the DB on every GIF command.
 
+import discord
+from discord.ext import commands
 import db
+from utils import _err, C_INFO
 
 _cache: dict[str, str | None] = {}
 
@@ -41,3 +44,25 @@ async def load_prefs() -> None:
     for row in rows:
         _cache[str(row["user_id"])] = row["gender"].strip()
     print(f"✅ Loaded {len(rows)} gender prefs from DB.")
+
+class GenderCog(commands.Cog, name="Gender"):
+    def __init__(self, bot): self.bot = bot
+
+    @commands.hybrid_command(name="gender", description="Set your gender for GIF text targeting")
+    async def gender(self, ctx, gender: str = None):
+        """Set your gender: m (male), f (female), nb (non-binary), or u (unspecified/neutral)."""
+        if gender is None:
+            current = await get_gender(str(ctx.author.id)) or "not set"
+            await ctx.send(embed=discord.Embed(
+                description=f"Your current gender: **{current}**\nUse `!gender m/f/nb/u` to set.",
+                color=C_INFO
+            ))
+            return
+        gender = gender.lower()
+        if gender not in ("m", "f", "nb", "u"):
+            return await _err(ctx, "Gender must be `m`, `f`, `nb`, or `u`.")
+        await set_gender(str(ctx.author.id), gender)
+        await ctx.send(embed=discord.Embed(
+            description=f"✅ Gender set to **{gender}** (m=male, f=female, nb=non-binary, u=unspecified/neutral).",
+            color=C_INFO
+        ))

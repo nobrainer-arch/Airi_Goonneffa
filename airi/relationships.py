@@ -85,8 +85,8 @@ class ProposalView(discord.ui.View):
             """, gid, uid, tid, self._ptype, uid, self._dowry, self._prenup)
             if self._ptype == "married":
                 await db.pool.execute("""
-                    INSERT INTO shared_accounts (relationship_id, guild_id, balance) VALUES ($1,$2,0)
-                """, rel["id"], gid)
+                    INSERT INTO shared_accounts (relationship_id, balance) VALUES ($1,0)
+                """, rel["id"])
             label = "💍 **You are now married!**" if self._ptype == "married" else "💘 **You are now dating!**"
             shared_note = "\n🏦 A shared account was created — use `!shared balance`." if self._ptype == "married" else ""
             e = discord.Embed(
@@ -212,7 +212,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         if not await check_channel(ctx, "relationship"): return
         await self._send_proposal(ctx, member, "dating", 0)
 
-    @propose.command(name="marriage")
+    @propose.command(name="marriage", aliases=["marry"])
     async def propose_marriage(self, ctx, member: discord.Member, dowry: int = 0):
         if not await check_channel(ctx, "relationship"): return
         if dowry < 0: return await _err(ctx, "Dowry can't be negative.")
@@ -222,6 +222,8 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         await self._send_proposal(ctx, member, "marriage", dowry)
 
     async def _send_proposal(self, ctx, member, ptype, dowry):
+        # Normalize: 'marriage' → 'married' for DB consistency
+        if ptype == 'marriage': ptype = 'married' 
         gid, uid, tid = ctx.guild.id, ctx.author.id, member.id
         if member.bot or member == ctx.author:
             return await _err(ctx, "Invalid target.")
@@ -405,7 +407,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
             await ctx.send(f"📋 Divorce case filed in {court_ch.mention} as Case `#{case['id']}`.")
 
     # ── Verdict (judge only) ─────────────────────────────────────
-    @commands.command()
+    @commands.hybrid_command()
     async def verdict(self, ctx, case_id: int, decision: str):
         """Judge only — !verdict <id> divorce|dismiss"""
         if not await is_judge(ctx.author):
@@ -535,16 +537,3 @@ class RelationshipCog(commands.Cog, name="Relationships"):
                     try: await m.send(embed=e, view=view)
                     except Exception: pass
 
-    # ── Opt-out ──────────────────────────────────────────────────
-    @commands.command(aliases=["relopt"])
-    async def reloptout(self, ctx, action: str = "out"):
-        action = action.lower()
-        gid, uid = ctx.guild.id, ctx.author.id
-        if action == "out":
-            await db.pool.execute("INSERT INTO rel_optout (guild_id,user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING", gid, uid)
-            await ctx.send("✅ Opted out of relationship commands.", delete_after=10)
-        elif action == "in":
-            await db.pool.execute("DELETE FROM rel_optout WHERE guild_id=$1 AND user_id=$2", gid, uid)
-            await ctx.send("✅ Opted back into relationship commands.", delete_after=10)
-        else:
-            await _err(ctx, "Use `!reloptout out` or `!reloptout in`")

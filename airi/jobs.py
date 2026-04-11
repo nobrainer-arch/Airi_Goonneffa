@@ -45,8 +45,9 @@ async def _ensure_work(conn, guild_id, user_id):
 class JobsCog(commands.Cog, name="Jobs"):
     def __init__(self, bot): self.bot = bot
 
-    @commands.command()
-    async def work(self, ctx):
+    @commands.hybrid_command(name="work", description="Work for coins")
+    async def work(self, ctx): await self._do_work(ctx)
+    async def _do_work(self, ctx):
         """Work a job for coins. 1-hour cooldown."""
         if not await check_channel(ctx, "economy"): return
         gid, uid, now = ctx.guild.id, ctx.author.id, datetime.utcnow()
@@ -77,8 +78,9 @@ class JobsCog(commands.Cog, name="Jobs"):
         e.set_footer(text=f"Level {level} · 1h cooldown")
         await ctx.send(embed=e)
 
-    @commands.command()
-    async def crime(self, ctx):
+    @commands.hybrid_command(name="crime", description="Commit a crime for coins")
+    async def crime(self, ctx): await self._do_crime(ctx)
+    async def _do_crime(self, ctx):
         """Risky: ~60% win, ~40% fine. 2-hour cooldown."""
         if not await check_channel(ctx, "economy"): return
         gid, uid, now = ctx.guild.id, ctx.author.id, datetime.utcnow()
@@ -121,7 +123,7 @@ class JobsCog(commands.Cog, name="Jobs"):
         e.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
         await ctx.send(embed=e)
 
-    @commands.command()
+    @commands.hybrid_command(name="jobs", description="See available jobs")
     async def jobs(self, ctx):
         """See all available jobs and their level requirements."""
         level = await _get_level(ctx.guild.id, ctx.author.id)

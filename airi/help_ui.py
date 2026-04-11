@@ -1,184 +1,201 @@
-# airi/help_ui.py — compact help with Select category menu
+# airi/help_ui.py — Help command with full category dropdown
 import discord
 from discord.ext import commands
-from utils import C_INFO, C_ECONOMY, C_SOCIAL, C_REL, C_GACHA, C_BUSINESS
+from utils import C_INFO, C_SOCIAL, C_ECONOMY, C_GACHA
 
-# ── Page data (title, color, description, [(field_name, field_value)...]) ──────
-PAGES = {
-    "overview": (
-        "📖 Airi Help",
-        C_INFO,
-        "Select a category below to see commands.",
-        [
-            ("💰 Economy",       "Daily coins, balance, pay, work, crime, shop"),
-            ("👥 Social",        "Profile, rep, claim/release waifus, leaderboard"),
-            ("💘 Relationships", "Propose, hookup, shared account, divorce court"),
-            ("🏪 Auction House", "List items, bid, buy, order book"),
-            ("🎰 Gacha",         "Roll for items — use the board in gacha channel"),
-            ("🏭 Business",      "Start a business, collect income, upgrade"),
-            ("🎭 GIF Actions",   "Anime GIF reactions — see full list with !cmds"),
-            ("⚙️ Config / Mod",  "!setup, !config, !goonneffa moderation bot"),
-        ],
-    ),
+PAGES: dict[str, tuple] = {
     "economy": (
-        "💰 Economy",
-        C_ECONOMY,
-        "Earn and spend coins. Works in configured bot channels.",
+        "💰 Economy", C_ECONOMY,
+        "Earn and spend coins. `!daily` opens the Economy Panel.",
         [
-            ("`!daily`",            "150–350 coins every 22h. Streak bonus up to +200."),
-            ("`!balance [@user]`",  "Wallet + last 10 transactions. Aliases: `!bal` `!coins`"),
-            ("`!pay @user <amt>`",  "Send coins with 5% tax. Max 10,000 per tx."),
-            ("`!give @user <amt>`", "Tax-free gift."),
-            ("`!work`",             "200–500 coins. 1h cooldown."),
-            ("`!crime`",            "60% win 500–1500 / 40% pay fine. 2h cooldown."),
-            ("`!shop`",             "Browse titles, boosts, shield, prenup — dropdown UI."),
-            ("`!title [name]`",     "Equip an owned title. Shows on all embeds."),
+            ("`!daily`",          "Economy Panel — Daily / Work / Crime with live cooldowns. Also: `!dp` `!earn`"),
+            ("`!balance [@user]`","Wallet. [Pay] and [Give] buttons built in. Also: `!bal` `!coins`"),
+            ("`!pay @user`",      "Send coins (5% tax, max 10,000). No args → UserSelect then amount modal."),
+            ("`!give @user`",     "Tax-free gift (max 1,000). No args → UserSelect then amount modal."),
+            ("`!shop`",           "Browse shop — dropdown of items, confirm button."),
+            ("`!buy [item]`",     "Buy an item. No item → dropdown. Has item → confirm."),
+            ("`!title [name]`",   "Equip a title. No name → dropdown of owned titles."),
+            ("`!kakera [@user]`", "Check 💎 kakera balance. Also: `!kak`"),
+            ("`!kakeashop`",      "Spend kakera on rare rewards — dropdown. Also: `!kshop`"),
         ],
     ),
     "social": (
-        "👥 Social & Waifus",
-        C_SOCIAL,
-        "Profiles, rep, and the waifu claim system.",
+        "💕 Social", C_SOCIAL,
+        "Profiles, rep, claims, and leaderboards.",
         [
-            ("`!profile [@user]`",   "Full profile card. Redirected if profile channel set."),
-            ("`!rank [@user]`",      "XP rank card. Aliases: `!level` `!xp`"),
-            ("`!leaderboard`",       "Top 10 with dropdown for XP / Coins / Rep."),
-            ("`!rep [@user]`",       "Give +1 rep (picker if no @). 12h cooldown."),
-            ("`!claim [@user]`",     "Claim someone as waifu (500 coins). Picker if no @."),
-            ("`!mywaifu [@user]`",   "Paginated harem list. Aliases: `!harem`"),
-            ("`!release [@user]`",   "Release a waifu — dropdown if no @."),
-            ("`!waifu [@user]`",     "See who owns someone and how many they own."),
-            ("`!nsfwoptout [out/in]`","Opt out of NSFW targeting."),
-            ("`!rpblock @user`",     "Block a user from RP/GIF commands on you."),
-            ("`!gender`",            "Set RP gender via buttons."),
+            ("`!profile [@user]`","Full profile embed with Rep/Claim/Waifus buttons."),
+            ("`!rep [@user]`",    "Give reputation. No args → UserSelect."),
+            ("`!claim [@user]`",  "Claim someone as your waifu (500 coins). No args → UserSelect."),
+            ("`!release [@user]`","Release a claimed waifu. No args → dropdown of your claims."),
+            ("`!mywaifu [@user]`","Paginated waifu harem with Give buttons. Also: `!harem`"),
+            ("`!waifu [@user]`",  "Check waifu status — owner, shield, etc."),
+            ("`!nsfwoptout`",     "Toggle NSFW opt-out on yourself."),
+            ("`!reloptout`",      "Toggle relationship command opt-out."),
+            ("`!leaderboard`",    "Server leaderboard — dropdown to switch: XP/Coins/Rep/Hugs/Kisses/Pats/Marriage/Waifus. Also: `!lb` `!top`"),
         ],
     ),
     "relationships": (
-        "💘 Relationships",
-        C_REL,
-        "Hookups, dating, marriage, and divorce court.",
+        "💍 Relationships", 0xe91e8c,
+        "Dating, marriage, court, and shared accounts.",
         [
-            ("`!hookup @user <coins>`",     "Paid hookup — no consent needed. Min 200 coins."),
-            ("`!propose dating @user`",     "Ask to date — buttons for accept/decline."),
-            ("`!propose marriage @user`",   "Propose marriage with optional dowry."),
-            ("`!myrel`",                    "View your relationship. Aliases: `!relationship`"),
-            ("`!shared balance/deposit/withdraw`", "Married couples' shared account."),
-            ("`!endrel`",                   "End hookup/dating instantly."),
-            ("`!endrel court <reason>`",    "File for divorce — case posted to court channel."),
-            ("`!verdict <id> divorce|dismiss`", "Judge only — rule on a divorce case."),
-            ("`!reloptout [out/in]`",       "Opt out of relationship commands."),
+            ("`!propose`",        "Propose dating or marriage. Opens type select → UserSelect → dowry modal."),
+            ("`!myrel`",          "Your relationship status + [End][Court][Shared] buttons."),
+            ("`!endrel`",         "End a relationship. Court subcommand files for divorce."),
+            ("`!shared`",         "Shared account — Balance / Deposit / Withdraw tabs."),
+            ("`!verdict`",        "Judges only — approve/deny open court cases."),
         ],
     ),
-    "market": (
-        "🏪 Auction House & Orders",
-        C_GACHA,
-        "Trade items via the AH or post buy orders.",
+    "gacha": (
+        "🎰 Gacha & Cards", C_GACHA,
+        "Item gacha + anime character cards with full rarity system.",
         [
-            ("`!inventory`",        "Your items with **Use** and **List in AH** buttons."),
-            ("`!ah list`",          "Browse active listings with page buttons."),
-            ("AH Listing Buttons",  "Every listing has **Bid** (modal), **Buyout** (confirm), **🔨 Stop** (seller)."),
-            ("`!orderbook`",        "Browse buy orders. **Fulfil** / **Post Order** / **Cancel** buttons."),
-            ("`!ah info <id>`",     "Jump link to a listing in the AH channel."),
+            ("Item Gacha",        "`!gachaboard` (mod) — posts Roll ×1 / ×10 board. 5-min view timeout."),
+            ("Waifu Board",       "`!waifuboard` (mod) — posts female character board with banners embedded."),
+            ("Husbando Board",    "`!husbandoboard` (mod) — posts male character board."),
+            ("Banner System",     "2 mythic + 5 legendary featured per board with 2× pull rate!"),
+            ("`!waifucollection`","Paginated card collection — full card art, bio, stats, Give button."),
+            ("`!waifuinfo <id>`", "Full card view by ID."),
+            ("`!waifulb`",        "Card leaderboard by rarity score."),
+            ("One-user-only",     "⚠️ Legendary & Mythic are exclusive per server. Duplicates → 💎 kakera."),
         ],
     ),
-"gacha": (
-        "🎰 Gacha & Cards",
-        C_GACHA,
-        "Item gacha + anime character cards. Use the persistent boards in your gacha channel.",
+    "milestones": (
+        "🏆 Milestones & Achievements", C_GACHA,
+        "Earn coins and kakera from reaching milestones.",
         [
-            ("Item Board",          "Press **Roll ×1** (500c) or **Roll ×10** (4,500c). Results private.  to post."),
-            ("Waifu Board",         "Press **Pull ×1** (300c) or **Pull ×10** (2,500c). Real anime characters. ."),
-            ("Husbando Board",      "Same as waifu but male characters. ."),
-            ("`!banners`",          "See the 5 featured characters with countdown timers. Featured chars have 2× pull rate."),
-            ("Legendary/Mythic",    "⚠️ These characters are ONE USER ONLY per server. Duplicates give kakera instead."),
-            ("`!waifucollection`",  "Browse your cards — full card art, stats, Give button. Aliases: "),
-            ("`!waifuinfo <id>`",   "Full card view for any card by ID. Aliases: "),
-            ("`!waifulb`",          "Leaderboard scored by rarity: Mythic=100, Legendary=20, Epic=5…"),
-            ("`!milestones`",       "Track hug/kiss/pat/level/gacha milestone progress + rewards. Aliases: "),
-            ("`!achieve`",          "View achievement progress with bars + rewards. Aliases: "),
+            ("`!milestones [@user]`","Hug/kiss/pat/level/gacha milestone progress. Also: `!ms`"),
+            ("`!achieve [@user]`",   "Achievement progress with bars. Also: `!achievements`"),
+            ("How to earn",          "Receive hugs, kisses, pats; level up; roll gacha; get married."),
+        ],
+    ),
+    "inventory": (
+        "🎒 Inventory", C_ECONOMY,
+        "Manage your items.",
+        [
+            ("`!inventory [@user]`","Paginated inventory with category filter. Use/Sell buttons. Also: `!inv`"),
+            ("`!use [item]`",       "Use an item. No args → dropdown of usable items."),
+        ],
+    ),
+    "auction": (
+        "🏪 Auction House", C_ECONOMY,
+        "Buy and sell items with bidding. Listings post in current channel.",
+        [
+            ("`!ah sell`",  "Sell an item. No args → item Select → quantity modal → price modal → posts."),
+            ("`!ah list`",  "Browse active listings with Bid/Buyout/Cancel buttons."),
+            ("`!ah bid`",   "Bid on a listing. No args → listing Select → amount modal."),
+            ("`!ah buy`",   "Direct buyout. No args → listing Select → confirm."),
+            ("`!ah info`",  "Info on a specific listing."),
+        ],
+    ),
+    "orders": (
+        "📦 Order Board", C_ECONOMY,
+        "Post buy orders — sellers fulfill for coins.",
+        [
+            ("`!orderbook`",    "Browse orders with Fulfill button. Also: `!orders`"),
+            ("`!order new`",    "Post a buy order — item dropdown → price modal → posts."),
+            ("`!order cancel`", "Cancel one of your open orders."),
         ],
     ),
     "business": (
-        "🏭 Business",
-        C_BUSINESS,
-        "Passive income — start a business and collect over time.",
+        "🏢 Business", C_ECONOMY,
+        "Own and upgrade businesses for passive income.",
         [
-            ("`!startbiz <name>`",  "Start your business (one per server)."),
-            ("`!mybiz`",            "View your business stats and income."),
-            ("`!collect`",          "Collect accumulated income."),
-            ("`!upgrade`",          "Upgrade your business for more income/capacity."),
-            ("`!hire @user`",       "Hire a partner for a bonus."),
-            ("`!listbiz`",          "See all businesses in the server."),
+            ("`!startbiz`",  "Start a business — type Select → name modal → confirm."),
+            ("`!mybiz`",     "Your business — Collect / Upgrade / Hire Manager / Sell buttons."),
+            ("`!listbiz`",   "Browse businesses for sale with Buy button."),
         ],
     ),
-    "actions": (
-        "🎭 GIF Actions",
-        C_INFO,
-        "Anime GIF reaction commands. Type `!cmds` for the full list.",
+    "gifs": (
+        "🎭 GIF Actions", C_SOCIAL,
+        "Anime GIF reactions. All work with `/cmd` `/!cmd` or `airi cmd`.",
         [
-            ("How to use",          "`!hug @user` or just `!hug` — shows a recipient picker."),
-            ("Back buttons",        "Some actions (hug, kiss, pat...) show a **[X] back** button for the target."),
-            ("NSFW actions",        "Only work in the configured NSFW channel. Opt out with `!nsfwoptout`."),
-            ("`!gender`",           "Set your RP gender for more relevant action text."),
-            ("`!rpblock @user`",    "Block someone from using actions on you."),
-            ("`!gifsearch <query>`","Search Klipy for any GIF — returns 8 varied results."),
-            ("Aliases",             "Many commands have aliases — all listed in config.py."),
+            ("SFW actions",   "hug, kiss, pat, cuddle, poke, wave, lick, slap, spank, bite, hi, bye, cry, sad, shrug, peek, watch, lol, bored, rage, sip, shock, punch, kick, kill, handhold, tickle, feed, heal, highfive, clap, stare, wink, smack, tease, nod, sleep, scared, pout, glare, cheeks, splash, spray, throw, tsundere, gaming, baka, bang, cook"),
+            ("NSFW actions",  "fap, grabbutts, grabboobs, grind, blowjob, kuni, pussyeat, lickdick, titjob, fuck, dickride, bfuck, anal, bathroomfuck, bondage, cum, 69, threesome, gangbang, feet, finger, fuck_lesbian"),
+            ("Pickers",       "All commands: no args → UserSelect. Solo cmds (fap, cry, etc.) have no target."),
+            ("Back buttons",  "hug, kiss, pat, poke, bite, wave, lick, slap, spank, cuddle show a Back button. Always different GIF!"),
+            ("`!gifsearch`",  "Search Klipy for GIFs — paginated with Lock button."),
+            ("`!rpblock`",    "Block/unblock someone from RP actions — button UI."),
         ],
     ),
-    "config": (
-        "⚙️ Config & Moderation",
-        C_INFO,
-        "Server setup and moderation commands.",
+    "admin": (
+        "⚙️ Admin", C_INFO,
+        "Server configuration and moderation.",
         [
-            ("`!setup`",                    "GUI wizard — select channels via dropdowns. Re-runnable."),
-            ("`!config show`",              "View current channel configuration."),
-            ("`!config set <type> #ch`",    "Change a single channel setting."),
-            ("`!config add <type> #ch`",    "Add to a multi-channel list."),
-            ("`!config judge @role`",       "Set who can rule on divorce cases."),
-            ("Goonneffa bot",               "`!goonneffa ban/kick/timeout @user reason`"),
-            ("`!chatdelhist [n]`",          "Delete last N bot messages (mod only)."),
+            ("`!config`",     "Server config panel — channel type dropdown + bulk add/remove."),
+            ("`!setup`",      "Setup wizard — channel & role selects."),
+            ("`!ignore [cmd]`","Toggle a command on/off in this server only. `!ignored` to list."),
+            ("`!gachaboard`", "Post the item gacha board."),
+            ("`!waifuboard`", "Post the waifu character board."),
+            ("`!husbandoboard`","Post the husbando character board."),
+            ("`!warn`",       "Warn a member. No args → UserSelect → reason modal."),
+            ("`!timeout`",    "Timeout a member. No args → UserSelect → duration modal."),
+            ("`!kick`",       "Kick a member. No args → UserSelect → confirm."),
+            ("`!ban`",        "Ban a member. No args → UserSelect → reason modal."),
+        ],
+    ),
+    "other": (
+        "🔧 Other", C_INFO,
+        "Miscellaneous commands.",
+        [
+            ("`!profile`",    "Full profile card with action buttons."),
+            ("`!rank`",       "XP rank card with progress bar."),
+            ("`!avatar`",     "Show avatar with Download/Server Avatar buttons."),
+            ("`!gender`",     "Set your gender for GIF text targeting."),
+            ("`!afk [reason]`","Set AFK status."),
+            ("`!audit`",      "View transaction history."),
+            ("`!kakera`",     "Check your 💎 kakera balance."),
+            ("`!kakeashop`",  "Spend kakera on rare items."),
+            ("`!milestones`", "View your milestone progress."),
+            ("`!achieve`",    "View your achievements."),
         ],
     ),
 }
 
-CATEGORY_OPTIONS = [
-    discord.SelectOption(label="Overview",         value="overview",      emoji="📖", default=True),
-    discord.SelectOption(label="Economy",           value="economy",       emoji="💰"),
-    discord.SelectOption(label="Social & Waifus",  value="social",        emoji="👥"),
-    discord.SelectOption(label="Relationships",    value="relationships", emoji="💘"),
-    discord.SelectOption(label="Auction House",    value="market",        emoji="🏪"),
-    discord.SelectOption(label="Gacha",            value="gacha",         emoji="🎰"),
-    discord.SelectOption(label="Business",         value="business",      emoji="🏭"),
-    discord.SelectOption(label="GIF Actions",      value="actions",       emoji="🎭"),
-    discord.SelectOption(label="Config & Mod",     value="config",        emoji="⚙️"),
-]
+C_INFO = 0x3498db
 
 
-def _build_embed(page_key: str) -> discord.Embed:
-    title, color, desc, fields = PAGES[page_key]
+def _build_help_embed(cat: str) -> discord.Embed:
+    title, color, desc, fields = PAGES[cat]
     e = discord.Embed(title=title, description=desc, color=color)
     for name, value in fields:
         e.add_field(name=name, value=value, inline=False)
-    e.set_footer(text="Use the dropdown to switch category · !cmds for full action list")
+    e.set_footer(text="Use the dropdown to switch category · /cmd or !cmd or airi cmd all work")
     return e
 
 
 class HelpView(discord.ui.View):
-    def __init__(self, author_id: int):
+    def __init__(self, current: str = "economy"):
         super().__init__(timeout=300)
-        self._author = author_id
+        opts = [
+            discord.SelectOption(label=v[0][:50], value=k, default=(k==current))
+            for k, v in PAGES.items()
+        ]
+        sel = discord.ui.Select(placeholder="Select a category…", options=opts[:25])
+        sel.callback = self._cb
+        self.add_item(sel)
+        self._sel = sel
 
-    @discord.ui.select(placeholder="Select a category...", options=CATEGORY_OPTIONS)
-    async def category_select(self, interaction: discord.Interaction, select: discord.ui.Select):
-        cat = select.values[0]
-        for opt in select.options: opt.default = (opt.value == cat)
-        await interaction.response.edit_message(embed=_build_embed(cat), view=self)
+    async def _cb(self, interaction: discord.Interaction):
+        cat = self._sel.values[0]
+        for opt in self._sel.options: opt.default = (opt.value == cat)
+        await interaction.response.edit_message(embed=_build_help_embed(cat), view=self)
 
 
 class HelpCog(commands.Cog, name="Help"):
     def __init__(self, bot): self.bot = bot
 
-    @commands.command(name="help", aliases=["bothelp", "cmdshelp"])
-    async def help_cmd(self, ctx):
-        view = HelpView(ctx.author.id)
-        await ctx.send(embed=_build_embed("overview"), view=view)
+    @commands.hybrid_command(name="help", aliases=["h","bothelp"], description="Show bot help")
+    async def help_cmd(self, ctx, *, category: str = "economy"):
+        cat = category.lower()
+        if cat not in PAGES: cat = "economy"
+        await ctx.send(embed=_build_help_embed(cat), view=HelpView(cat))
+
+    @commands.hybrid_command(name="cmds", aliases=["commands","cmdlist"], description="Full command list")
+    async def cmds(self, ctx):
+        e = discord.Embed(title="📋 All Commands", color=C_INFO,
+                          description="Use the dropdown in `!help` for details on each category.\n\n"
+                          "All commands work as `/cmd` (slash), `!cmd` (prefix), or `airi cmd`.")
+        for k, (title, _, _, _) in PAGES.items():
+            e.add_field(name=title, value=f"`!help {k}` for details", inline=True)
+        e.set_footer(text="Tip: type 'airi' alone to open help")
+        await ctx.send(embed=e)

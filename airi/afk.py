@@ -30,7 +30,7 @@ async def clear_afk(guild_id: int, user_id: int):
 class AFKCog(commands.Cog, name="AFK"):
     def __init__(self, bot): self.bot = bot
 
-    @commands.command(aliases=["away"])
+    @commands.hybrid_command(aliases=["away"])
     async def afk(self, ctx, *, reason: str = "AFK"):
         """Set yourself as AFK. Bot will notify people who mention you."""
         reason = reason[:100]  # cap length

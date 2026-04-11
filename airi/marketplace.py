@@ -262,7 +262,7 @@ class MarketplaceCog(commands.Cog, name="Marketplace"):
         for row in rows:
             self.bot.add_view(WaifuListingView(row["id"], row["seller_id"], bool(row["buyout_price"])))
 
-    @commands.command(aliases=["wl", "listwaifu"])
+    @commands.hybrid_command(aliases=["wl", "listwaifu"])
     async def wlist(self, ctx, member: discord.Member = None, min_bid: int = 100, buyout_price: int = None):
         """List a waifu for auction. !wlist @user <min_bid> [buyout_price]"""
         if member is None:
@@ -299,7 +299,7 @@ class MarketplaceCog(commands.Cog, name="Marketplace"):
 
         await _do_wlist(self.bot, ctx.guild, ctx.channel, ctx.author, member, min_bid, buyout_price)
 
-    @commands.command(aliases=["wmarket", "wm"])
+    @commands.hybrid_command(aliases=["wmarket", "wm"])
     async def waifumarket(self, ctx):
         """Browse active waifu market listings."""
         gid  = ctx.guild.id

@@ -33,7 +33,7 @@ class AvatarView(discord.ui.View):
 class AvatarCog(commands.Cog, name="Avatar"):
     def __init__(self, bot): self.bot = bot
 
-    @commands.command(aliases=["av", "pfp"])
+    @commands.hybrid_command(aliases=["av", "pfp"])
     async def avatar(self, ctx, member: discord.Member = None):
         """View someone's avatar with download links."""
         target = member or ctx.author

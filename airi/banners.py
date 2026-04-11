@@ -9,9 +9,9 @@ from datetime import datetime, timedelta
 import db
 from utils import C_GACHA
 
-BANNER_COUNT  = 5
-MIN_DAYS      = 3
-MAX_DAYS      = 7
+BANNER_COUNT  = 7
+MIN_DAYS      = 0.5
+MAX_DAYS      = 1
 BOOST_MULT    = 2.0   # featured chars have 2× pull weight
 
 
@@ -137,7 +137,7 @@ class BannersCog(commands.Cog, name="Banners"):
                 print(f"Banner loop error: {e}")
             await asyncio.sleep(3600)  # Check every hour
 
-    @commands.command(aliases=["banner", "featured"])
+    @commands.hybrid_command(aliases=["banner", "featured"])
     async def banners(self, ctx):
         """Show the currently active gacha banners with countdown timers."""
         gid = ctx.guild.id
