@@ -634,15 +634,16 @@ class AuctionHouseCog(commands.Cog, name="AuctionHouse"):
                 self.guild = ctx_.guild
                 self.channel = ctx_.channel
                 self.client = ctx_.bot
+                self._ctx = ctx_
                 self.response = type('Response', (), {
-                    'send_message': lambda self, content, ephemeral=False: ctx_.send(content),
+                    'send_message': lambda _, content, ephemeral=False: ctx_.send(content),
                     'defer': lambda: None
                 })()
                 self.followup = type('Followup', (), {
-                    'send': lambda self, content, ephemeral=False: ctx_.send(content)
+                    'send': lambda _, content, ephemeral=False: ctx_.send(content)
                 })()
             async def response_send_message(self, content, ephemeral=False):
-                await ctx_.send(content)
+                await self._ctx.send(content)
         fake_inter = FakeInteraction(ctx)
         await _do_sell(fake_inter, gid, uid, item_key, price, quantity, min_bid)
 

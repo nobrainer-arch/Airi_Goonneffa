@@ -322,16 +322,16 @@ class AnimeCharsCog(commands.Cog, name="AnimeChars"):
 
     @commands.hybrid_command(name="waifucollection", aliases=["mycards"], description="Browse your anime card collection")
     async def waifucollection(self, ctx, member: discord.Member = None):
-        if not await check_channel(ctx, "gacha"): return
+        # No channel restriction – works anywhere
         target = member or ctx.author
         gid, uid = ctx.guild.id, target.id
 
         rows = await db.pool.fetch("""
             SELECT id, char_name, char_image, rarity, series, gender, favourites,
-                   personality_tag, card_wrap, affection, obtained_at
+                personality_tag, card_wrap, affection, obtained_at
             FROM anime_waifus WHERE guild_id=$1 AND owner_id=$2
             ORDER BY CASE rarity WHEN 'mythic' THEN 0 WHEN 'legendary' THEN 1 WHEN 'epic' THEN 2
-                                 WHEN 'rare' THEN 3 ELSE 4 END, obtained_at DESC
+                                WHEN 'rare' THEN 3 ELSE 4 END, obtained_at DESC
         """, gid, uid)
 
         if not rows:
@@ -394,7 +394,7 @@ class AnimeCharsCog(commands.Cog, name="AnimeChars"):
 
     @commands.hybrid_command(name="waifuinfo", aliases=["wcard"], description="View a waifu card by ID")
     async def waifuinfo(self, ctx, card_id: int):
-        if not await check_channel(ctx, "gacha"): return
+        # No channel restriction
         row = await db.pool.fetchrow(
             "SELECT * FROM anime_waifus WHERE id=$1 AND guild_id=$2", card_id, ctx.guild.id
         )
@@ -414,11 +414,11 @@ class AnimeCharsCog(commands.Cog, name="AnimeChars"):
 
     @commands.hybrid_command(name="waifulb", aliases=["waifutop"], description="Waifu card collection leaderboard")
     async def waifulb(self, ctx):
-        if not await check_channel(ctx, "social"): return
+        # No channel restriction
         gid = ctx.guild.id
         rows = await db.pool.fetch("""
             SELECT owner_id, COUNT(*) AS total,
-                   SUM(CASE WHEN rarity='mythic' THEN 100 WHEN rarity='legendary' THEN 20
+                SUM(CASE WHEN rarity='mythic' THEN 100 WHEN rarity='legendary' THEN 20
                             WHEN rarity='epic' THEN 5 WHEN rarity='rare' THEN 2 ELSE 1 END) AS score
             FROM anime_waifus WHERE guild_id=$1
             GROUP BY owner_id ORDER BY score DESC LIMIT 10
