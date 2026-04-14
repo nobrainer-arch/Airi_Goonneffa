@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands
 import random
 import asyncio
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import db
 from utils import C_GACHA
 
@@ -29,6 +29,12 @@ async def _ensure_banner_table():
             is_active   BOOLEAN DEFAULT TRUE
         )
     """)
+
+def _make_tz_aware(ts):
+    if ts is None: return None
+    from datetime import timezone as _tz
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None: return ts
+    return ts.replace(tzinfo=_tz.utc)
 
 async def get_active_banners(guild_id: int) -> list[dict]:
     rows = await db.pool.fetch("""
@@ -60,7 +66,7 @@ async def fill_banners(guild_id: int, bot):
     for i in range(min(needed, len(pool))):
         c = pool[i]
         duration = random.uniform(MIN_DAYS, MAX_DAYS)
-        ends_at  = datetime.utcnow() + timedelta(days=duration)
+        ends_at = (datetime.now(timezone.utc) + timedelta(days=duration)).replace(tzinfo=None)
         await db.pool.execute("""
             INSERT INTO banners
                 (guild_id, char_name, char_image, char_gender, rarity, series, source_id, boost_mult, ends_at)
@@ -69,7 +75,10 @@ async def fill_banners(guild_id: int, bot):
             c["rarity"], c.get("series", "Unknown"), c.get("id"), BOOST_MULT, ends_at)
 
 def _countdown_str(ends_at) -> str:
-    delta = ends_at - datetime.utcnow()
+    from datetime import timezone as _tz
+    _ea = ends_at
+    if _ea and (not hasattr(_ea,'tzinfo') or _ea.tzinfo is None): _ea = _ea.replace(tzinfo=_tz.utc)
+    delta = _make_tz_aware(_ea) - datetime.now(_tz.utc)
     total_s = int(delta.total_seconds())
     if total_s <= 0: return "Ending soon"
     d = total_s // 86400
@@ -144,10 +153,12 @@ class BannersCog(commands.Cog, name="Banners"):
 
         # Build paginated view
         class BannerView(discord.ui.View):
-            def __init__(self, banners):
+            def __init__(self, banners, ctx_author_id, guild_name):
                 super().__init__(timeout=180)
                 self.banners = banners
                 self.current = 0
+                self._ctx_author = ctx_author_id   # FIX: set in __init__
+                self._guild_name = guild_name
                 self._update_buttons()
 
             def _update_buttons(self):
@@ -207,11 +218,7 @@ class BannersCog(commands.Cog, name="Banners"):
                 return e
 
             async def send(self, ctx):
-                self._ctx_author = ctx.author.id
-                self._guild_name = ctx.guild.name
                 await ctx.send(embed=self._embed(), view=self)
 
-        view = BannerView(active)
-        view._ctx_author = ctx.author.id
-        view._guild_name = ctx.guild.name
+        view = BannerView(active, ctx.author.id, ctx.guild.name)
         await ctx.send(embed=view._embed(), view=view)

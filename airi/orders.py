@@ -2,7 +2,7 @@
 # Flow: !order new → item SELECT → price modal → quantity confirm → post
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 import db
 from utils import _err, C_ECONOMY, C_SUCCESS, C_WARN
 from airi.guild_config import check_channel, get_market_channel
@@ -39,7 +39,7 @@ async def _post_order(inter: discord.Interaction, item_key: str, price: int, qty
             f"💰 Up to **{price:,}** coins each · Buyer: {inter.user.mention}\n\n"
             f"*Order #{row['id']} — Sellers: use `!orderbook` to fulfill*"
         ),
-        color=C_ECONOMY, timestamp=datetime.utcnow(),
+        color=C_ECONOMY, timestamp=datetime.now(timezone.utc),
     )
     market_ch_id = await get_market_channel(gid)
     ch = inter.client.get_channel(market_ch_id) if market_ch_id else inter.channel

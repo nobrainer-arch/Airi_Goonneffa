@@ -1,7 +1,7 @@
 # airi/jobs.py
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import db
 from utils import _err, C_ECONOMY, C_ERROR
@@ -35,6 +35,18 @@ async def _get_level(guild_id, user_id):
     row = await db.pool.fetchrow("SELECT level FROM xp WHERE guild_id=$1 AND user_id=$2", guild_id, user_id)
     return row["level"] if row else 0
 
+def _make_tz_aware(ts):
+    if ts is None: return None
+    from datetime import timezone as _tz
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None: return ts
+    return ts.replace(tzinfo=_tz.utc)
+
+def _utc_naive(ts):
+    if ts is None: return None
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+        return ts.astimezone(timezone.utc).replace(tzinfo=None)
+    return ts
+
 async def _ensure_work(conn, guild_id, user_id):
     await conn.execute(
         "INSERT INTO work_log (guild_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
@@ -50,13 +62,15 @@ class JobsCog(commands.Cog, name="Jobs"):
     async def _do_work(self, ctx):
         """Work a job for coins. 1-hour cooldown."""
         if not await check_channel(ctx, "economy"): return
-        gid, uid, now = ctx.guild.id, ctx.author.id, datetime.utcnow()
+        from datetime import timezone as _tz
+        gid, uid, now = ctx.guild.id, ctx.author.id, datetime.now(_tz.utc)
 
         async with db.pool.acquire() as conn:
             await _ensure_work(conn, gid, uid)
             row = await conn.fetchrow("SELECT last_work FROM work_log WHERE guild_id=$1 AND user_id=$2", gid, uid)
             if row and row["last_work"]:
-                elapsed = now - row["last_work"]
+                lw = _utc_naive(row["last_work"])
+                elapsed = _utc_naive(now) - lw
                 if elapsed < timedelta(seconds=WORK_COOLDOWN):
                     rem = timedelta(seconds=WORK_COOLDOWN) - elapsed
                     h, s = divmod(int(rem.total_seconds()), 3600)
@@ -69,7 +83,7 @@ class JobsCog(commands.Cog, name="Jobs"):
         await log_txn(ctx.bot, gid, "Work", "System", ctx.author, earned, job[0])
         from airi.milestones import update_achievement
         await update_achievement(ctx.bot, gid, uid, 'work_50', 1, ctx.channel)
-        await db.pool.execute("UPDATE work_log SET last_work=$1 WHERE guild_id=$2 AND user_id=$3", now, gid, uid)
+        await db.pool.execute("UPDATE work_log SET last_work=$1 WHERE guild_id=$2 AND user_id=$3", _utc_naive(now), gid, uid)
         await _audit(gid, uid, "work", job[0], earned)
 
         e = discord.Embed(color=C_ECONOMY)
@@ -83,13 +97,15 @@ class JobsCog(commands.Cog, name="Jobs"):
     async def _do_crime(self, ctx):
         """Risky: ~60% win, ~40% fine. 2-hour cooldown."""
         if not await check_channel(ctx, "economy"): return
-        gid, uid, now = ctx.guild.id, ctx.author.id, datetime.utcnow()
+        from datetime import timezone as _tz
+        gid, uid, now = ctx.guild.id, ctx.author.id, datetime.now(_tz.utc)
 
         async with db.pool.acquire() as conn:
             await _ensure_work(conn, gid, uid)
             row = await conn.fetchrow("SELECT last_crime FROM work_log WHERE guild_id=$1 AND user_id=$2", gid, uid)
             if row and row.get("last_crime"):
-                elapsed = now - row["last_crime"]
+                lc = _utc_naive(row["last_crime"])
+                elapsed = _utc_naive(now) - lc
                 if elapsed < timedelta(seconds=CRIME_COOLDOWN):
                     rem = timedelta(seconds=CRIME_COOLDOWN) - elapsed
                     h, s = divmod(int(rem.total_seconds()), 3600)
@@ -98,7 +114,7 @@ class JobsCog(commands.Cog, name="Jobs"):
         crime_entry = random.choice(CRIMES)
         name, win_range, loss_range, rate = crime_entry
         success = random.random() < rate
-        await db.pool.execute("UPDATE work_log SET last_crime=$1 WHERE guild_id=$2 AND user_id=$3", now, gid, uid)
+        await db.pool.execute("UPDATE work_log SET last_crime=$1 WHERE guild_id=$2 AND user_id=$3", _utc_naive(now), gid, uid)
 
         if success:
             earned = random.randint(*win_range)

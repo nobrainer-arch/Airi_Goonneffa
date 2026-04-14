@@ -48,6 +48,7 @@ BACK_ACTIONS: dict[str, tuple[str, str]] = {
     "slap":   ("slap",   "👋 Slap back"),
     "spank":  ("spank",  "🔥 Spank back"),
     "cuddle": ("cuddle", "🤗 Cuddle back"),
+    "tease":  ("tease",  "😏 Tease back"),
 }
 
 # ── Aliases  ─  edit freely, no need to touch command files ───────

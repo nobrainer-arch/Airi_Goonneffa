@@ -3,7 +3,7 @@
 # Bids/confirmations are ephemeral. Only completed sales post to txn channel.
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import db
 from utils import _err, C_GACHA, C_ECONOMY, C_WARN, C_SUCCESS, C_ERROR
@@ -239,8 +239,8 @@ async def _refresh_listing_msg(bot, gid: int, lid: int, guild):
     """Reload listing from DB and edit the pinned message."""
     row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1", lid)
     if not row: return
-    ch_id  = row.get("listing_channel_id")
-    msg_id = row.get("listing_message_id")
+    ch_id  = row.get("channel_id")
+    msg_id = row.get("message_id")
     if not ch_id or not msg_id: return
     ch = bot.get_channel(ch_id)
     if not ch: return
@@ -279,7 +279,7 @@ async def _post_txn(bot, gid: int, guild, row, buyer: discord.Member | None,
             f"*(5% fee deducted)*"
         ),
         color=C_ECONOMY,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     await ch.send(embed=e)
 
@@ -487,19 +487,28 @@ class AuctionHouseCog(commands.Cog, name="AuctionHouse"):
         """Re-attach persistent views to all active listings after bot is ready."""
         async def restore():
             await self.bot.wait_until_ready()
-            rows = await db.pool.fetch(
-                "SELECT * FROM auction_house WHERE status='active' AND listing_message_id IS NOT NULL"
-            )
+            rows = await db.pool.fetch("""
+                SELECT id, guild_id, seller_id, item_key, item_name, quantity,
+                       rarity, price, min_bid, current_bid, current_bidder_id, status,
+                       expires_at,
+                       COALESCE(channel_id, listing_channel_id)   AS channel_id,
+                       COALESCE(message_id, listing_message_id)   AS message_id
+                FROM auction_house
+                WHERE status='active'
+                  AND (listing_message_id IS NOT NULL OR message_id IS NOT NULL)
+            """)
             count = 0
             for row in rows:
                 guild = self.bot.get_guild(row["guild_id"])
                 if not guild:
                     continue
-                channel = self.bot.get_channel(row["listing_channel_id"])
+                ch_id = row["channel_id"] if "channel_id" in row.keys() else row.get("listing_channel_id")
+                channel = self.bot.get_channel(ch_id) if ch_id else None
                 if not channel:
                     continue
                 try:
-                    message = await channel.fetch_message(row["listing_message_id"])
+                    msg_id = row["message_id"] if "message_id" in row.keys() else row.get("listing_message_id")
+                    message = await channel.fetch_message(msg_id)
                     has_bid = row.get("min_bid") is not None
                     view = ListingActionView(
                         row["id"], row["guild_id"], row["seller_id"],
@@ -674,8 +683,8 @@ class AuctionHouseCog(commands.Cog, name="AuctionHouse"):
         row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1 AND guild_id=$2", listing_id, gid)
         if not row:
             return await _err(ctx, f"Listing `#{listing_id}` not found.")
-        msg_id = row.get("listing_message_id")
-        ch_id  = row.get("listing_channel_id")
+        msg_id = row.get("message_id")
+        ch_id  = row.get("channel_id")
         if msg_id and ch_id and row["status"] == "active":
             jump = f"https://discord.com/channels/{gid}/{ch_id}/{msg_id}"
             await ctx.send(f"[Jump to listing #{listing_id}]({jump})", delete_after=15)

@@ -1,7 +1,7 @@
 # airi/relationships.py
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import asyncio
 import db
 from utils import _err, C_REL, C_ERROR, C_WARN, C_SUCCESS, is_mod
@@ -50,7 +50,7 @@ async def _rel_opted_out(guild_id, user_id):
 class ProposalView(discord.ui.View):
     def __init__(self, proposer_id: int, target_id: int, proposal_row_id: int,
                  ptype: str, dowry: int, prenup: bool):
-        super().__init__(timeout=PROPOSAL_TIMEOUT)
+        super().__init__(timeout=None)  # Persistent view
         self._proposer  = proposer_id
         self._target    = target_id
         self._row_id    = proposal_row_id
@@ -59,6 +59,15 @@ class ProposalView(discord.ui.View):
         self._prenup    = prenup
         self._done      = False
 
+        # Add buttons with unique custom_id
+        accept_btn = discord.ui.Button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id=f"proposal_accept_{self._row_id}")
+        accept_btn.callback = self.accept
+        self.add_item(accept_btn)
+
+        decline_btn = discord.ui.Button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id=f"proposal_decline_{self._row_id}")
+        decline_btn.callback = self.decline
+        self.add_item(decline_btn)
+
     async def _finish(self, interaction: discord.Interaction, accepted: bool):
         if self._done:
             await interaction.response.send_message("Already responded.", ephemeral=True)
@@ -66,6 +75,16 @@ class ProposalView(discord.ui.View):
         if interaction.user.id != self._target:
             await interaction.response.send_message("Not for you.", ephemeral=True)
             return
+
+        # Check if proposal still exists and is pending
+        row = await db.pool.fetchrow("SELECT expires_at, status FROM proposals WHERE id=$1", self._row_id)
+        if not row or row["status"] != "pending":
+            await interaction.response.send_message("This proposal is no longer active.", ephemeral=True)
+            return
+        if row["expires_at"] < datetime.utcnow():
+            await interaction.response.send_message("This proposal has expired.", ephemeral=True)
+            return
+
         self._done = True
         self.stop()
 
@@ -80,9 +99,9 @@ class ProposalView(discord.ui.View):
 
         if accepted:
             rel = await db.pool.fetchrow("""
-                INSERT INTO relationships (guild_id, user1_id, user2_id, type, proposer_id, dowry_paid, prenup)
-                VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id
-            """, gid, uid, tid, self._ptype, uid, self._dowry, self._prenup)
+                INSERT INTO relationships (guild_id, user1_id, user2_id, type, dowry, prenup)
+                VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
+            """, gid, uid, tid, self._ptype, self._dowry, self._prenup)
             if self._ptype == "married":
                 await db.pool.execute("""
                     INSERT INTO shared_accounts (relationship_id, balance) VALUES ($1,0)
@@ -108,11 +127,30 @@ class ProposalView(discord.ui.View):
             item.disabled = True
         await interaction.response.edit_message(embed=e, view=self)
 
-    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="proposal_accept")
+        # Send DMs
+        proposer = interaction.guild.get_member(self._proposer)
+        target = interaction.user
+        if accepted:
+            if self._ptype == "married":
+                msg = f"💍 Congratulations! Your marriage proposal was accepted. You are now married to {target.mention}."
+            else:
+                msg = f"💘 Your dating proposal was accepted. You are now dating {target.mention}."
+            for user in [proposer, target]:
+                if user:
+                    try:
+                        await user.send(msg)
+                    except discord.Forbidden:
+                        pass
+        else:
+            if self._dowry > 0 and proposer:
+                try:
+                    await proposer.send(f"💔 Your marriage proposal was declined. **{self._dowry:,} coins** have been refunded to your account.")
+                except discord.Forbidden:
+                    pass
+
     async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction, True)
 
-    @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id="proposal_decline")
     async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction, False)
 
@@ -196,6 +234,77 @@ class _CheatingResolutionView(discord.ui.View):
 
 
 
+class ProposeUserSelect(discord.ui.UserSelect):
+    def __init__(self, ptype, cog, ctx):
+        super().__init__(placeholder="Select user...", min_values=1, max_values=1)
+        self.ptype = ptype
+        self.cog = cog
+        self.ctx = ctx
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("This isn't for you.", ephemeral=True)
+        member = self.values[0]
+        if member.bot or member == self.ctx.author:
+            return await interaction.response.send_message("Invalid target.", ephemeral=True)
+        if self.ptype == "dating":
+            await interaction.response.defer()
+            await self.cog._send_proposal(self.ctx, member, "dating", 0)
+        elif self.ptype == "marriage":
+            modal = ProposeDowryModal(member, self.cog, self.ctx)
+            await interaction.response.send_modal(modal)
+
+
+class ProposeDowryModal(discord.ui.Modal, title="Marriage Proposal Dowry"):
+    dowry_input = discord.ui.TextInput(label="Dowry (optional)", placeholder="0", required=False, default="0")
+
+    def __init__(self, member, cog, ctx):
+        super().__init__()
+        self.member = member
+        self.cog = cog
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        dowry_str = self.dowry_input.value.strip()
+        try:
+            dowry = int(dowry_str) if dowry_str else 0
+            if dowry < 0:
+                raise ValueError
+        except ValueError:
+            return await interaction.response.send_message("Invalid dowry amount.", ephemeral=True)
+        if dowry > 0:
+            bal = await get_balance(self.ctx.guild.id, self.ctx.author.id)
+            if bal < dowry:
+                return await interaction.response.send_message(f"You don't have **{dowry:,} coins** for the dowry.", ephemeral=True)
+        await interaction.response.defer()
+        await self.cog._send_proposal(self.ctx, self.member, "marriage", dowry)
+
+
+class ProposeTypeView(discord.ui.View):
+    def __init__(self, cog, ctx):
+        super().__init__(timeout=300)  # 5 minutes
+        self.cog = cog
+        self.ctx = ctx
+
+    @discord.ui.button(label="💌 Dating", style=discord.ButtonStyle.primary)
+    async def dating_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("This isn't for you.", ephemeral=True)
+        embed = discord.Embed(description="Select the user to propose dating to:")
+        view = discord.ui.View()
+        view.add_item(ProposeUserSelect("dating", self.cog, self.ctx))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(label="💍 Marriage", style=discord.ButtonStyle.primary)
+    async def marriage_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user != self.ctx.author:
+            return await interaction.response.send_message("This isn't for you.", ephemeral=True)
+        embed = discord.Embed(description="Select the user to propose marriage to:")
+        view = discord.ui.View()
+        view.add_item(ProposeUserSelect("marriage", self.cog, self.ctx))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
 class RelationshipCog(commands.Cog, name="Relationships"):
     def __init__(self, bot):
         self.bot = bot
@@ -203,9 +312,12 @@ class RelationshipCog(commands.Cog, name="Relationships"):
 
 
     # ── Propose dating / marriage ────────────────────────────────
-    @commands.group(name="propose", invoke_without_command=True)
+    @commands.hybrid_group(name="propose", description="Propose dating or marriage", invoke_without_command=True)
     async def propose(self, ctx):
-        await _err(ctx, "Usage: `!propose dating @user` or `!propose marriage @user <dowry>`")
+        if not await check_channel(ctx, "relationship"): return
+        e = discord.Embed(title="💕 Propose Relationship", description="Choose the type of proposal:", color=C_REL)
+        view = ProposeTypeView(self, ctx)
+        await ctx.send(embed=e, view=view)
 
     @propose.command(name="dating")
     async def propose_dating(self, ctx, member: discord.Member):
@@ -222,8 +334,8 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         await self._send_proposal(ctx, member, "marriage", dowry)
 
     async def _send_proposal(self, ctx, member, ptype, dowry):
-        # Normalize: 'marriage' → 'married' for DB consistency
-        if ptype == 'marriage': ptype = 'married' 
+        # Normalize for DB
+        ptype_db = 'married' if ptype == 'marriage' else ptype
         gid, uid, tid = ctx.guild.id, ctx.author.id, member.id
         if member.bot or member == ctx.author:
             return await _err(ctx, "Invalid target.")
@@ -253,9 +365,9 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         row = await db.pool.fetchrow("""
             INSERT INTO proposals (guild_id, proposer_id, target_id, type, dowry, expires_at)
             VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
-        """, gid, uid, tid, ptype, dowry, expires)
+        """, gid, uid, tid, ptype_db, dowry, expires)
 
-        view = ProposalView(uid, tid, row["id"], ptype, dowry, prenup)
+        view = ProposalView(uid, tid, row["id"], ptype_db, dowry, prenup)
         e = discord.Embed(
             title=label,
             description=(
@@ -266,10 +378,11 @@ class RelationshipCog(commands.Cog, name="Relationships"):
             color=C_REL,
         )
         e.set_thumbnail(url=member.display_avatar.url)
-        await ctx.send(embed=e, view=view)
+        msg = await ctx.send(embed=e, view=view)
+        ctx.bot.add_view(view, message_id=msg.id)
 
     # ── View relationship ────────────────────────────────────────
-    @commands.command(aliases=["relationship", "partner"])
+    @commands.hybrid_command(name="myrel", aliases=["relationship", "partner"], description="View your relationship status")
     async def myrel(self, ctx):
         if not await check_channel(ctx, "relationship"): return
         gid, uid = ctx.guild.id, ctx.author.id
@@ -296,7 +409,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         await ctx.send(embed=e)
 
     # ── Shared account ───────────────────────────────────────────
-    @commands.group(name="shared", invoke_without_command=True)
+    @commands.hybrid_group(name="shared", description="Manage shared account", invoke_without_command=True)
     async def shared(self, ctx):
         if ctx.invoked_subcommand is not None: return
         await _err(ctx, "Use `!shared balance`, `!shared deposit <amt>`, or `!shared withdraw <amt>`")
@@ -398,7 +511,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
                 f"`!verdict {case['id']} divorce` — grant the divorce\n"
                 f"`!verdict {case['id']} dismiss` — dismiss the case"
             ),
-            color=C_ERROR, timestamp=datetime.utcnow(),
+            color=C_ERROR, timestamp=datetime.now(timezone.utc),
         )
         e.set_footer(text="Prenup applies if one was active at time of marriage.")
         msg = await court_ch.send(embed=e)

@@ -77,7 +77,7 @@ async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_k
         await interaction.followup.send("❌ Item not in inventory (or qty 0).", ephemeral=True)
         return
 
-    from datetime import datetime, timedelta
+    from datetime import datetime, timedelta, timezone
     key = item_key
 
     if key == "xp_boost_1h":
@@ -273,7 +273,7 @@ class InventoryCog(commands.Cog, name="Inventory"):
     def __init__(self, bot):
         self.bot = bot
 
-    @commands.command(aliases=["inv", "items"])
+    @commands.hybrid_command(name="inv", aliases=["inventory", "items"], description="View your inventory")
     async def inventory(self, ctx, member: discord.Member = None):
         if not await check_channel(ctx, "economy"):
             return

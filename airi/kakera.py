@@ -170,8 +170,9 @@ async def _do_kshop_buy(interaction: discord.Interaction, guild_id: int, user_id
         msg = f"✅ Title **{title_name}** unlocked! Equip with `!title {title_name}`."
 
     elif itype == "boost" and key == "xp_3day_boost":
-        from datetime import datetime, timedelta
-        until = datetime.utcnow() + timedelta(days=3)
+        from datetime import datetime, timedelta, timezone
+        from datetime import timezone as _tz
+        until = datetime.now(_tz.utc) + timedelta(days=3)
         await db.pool.execute(
             "UPDATE economy SET xp_boost_until=$1 WHERE guild_id=$2 AND user_id=$3",
             until, guild_id, user_id

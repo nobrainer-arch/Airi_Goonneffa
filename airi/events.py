@@ -1,10 +1,16 @@
 # airi/events.py — Event listeners
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import db
 import config
 from utils import C_ECONOMY
+
+def _make_tz_aware(ts):
+    if ts is None: return None
+    from datetime import timezone as _tz
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None: return ts
+    return ts.replace(tzinfo=_tz.utc)
 
 class EventsCog(commands.Cog, name="Events"):
     def __init__(self, bot): self.bot = bot
@@ -22,7 +28,9 @@ class EventsCog(commands.Cog, name="Events"):
         )
         if not row: return
         if row["last_daily"]:
-            elapsed = datetime.utcnow() - row["last_daily"]
+            ld = row["last_daily"]
+            if ld and (not hasattr(ld,'tzinfo') or ld.tzinfo is None): ld = ld.replace(tzinfo=timezone.utc)
+            elapsed = datetime.now(timezone.utc) - ld
             if elapsed < timedelta(hours=22): return
         streak = row["streak"] or 0
         desc = "Don't forget your **!daily** reward!"
@@ -65,7 +73,7 @@ class EventsCog(commands.Cog, name="Events"):
                 "SELECT reason, set_at FROM afk WHERE guild_id=$1 AND user_id=$2", gid, m.id
             )
             if row:
-                ago = datetime.utcnow() - row["set_at"]
+                ago = datetime.now(timezone.utc) - row["set_at"]
                 mins = int(ago.total_seconds() // 60)
                 try:
                     await message.channel.send(

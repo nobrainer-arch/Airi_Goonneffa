@@ -2,7 +2,7 @@
 # Milestones: one-time rewards for reaching thresholds (coins + kakera)
 # Achievements: tracked progress toward goals
 import discord
-from datetime import datetime
+from datetime import datetime, timezone
 import db
 from utils import C_GACHA, C_SUCCESS
 

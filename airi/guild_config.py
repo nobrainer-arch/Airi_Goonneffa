@@ -21,6 +21,7 @@ CHANNEL_TYPES: dict[str, tuple[str, bool, str]] = {
     "economy":  ("eco_channels",     True,  "💰 Economy channels"),
     "relationship": ("rel_channels", True,  "💍 Relationship channels"),
     "mediaonly":("media_only",       True,  "📸 Media-only channels"),
+    "cards":    ("cards_channel",  False, "🎴 Card market channel"),
 }
 
 K_BOT   = "bot_channels"
@@ -37,6 +38,7 @@ K_SOCIAL  = "social_channels"
 K_ECO     = "eco_channels"
 K_REL     = "rel_channels"
 K_MEDIA   = "media_only"
+K_CARDS   = "cards_channel"
 K_JUDGE   = "judge_role"
 
 async def get(gid: int, key: str) -> str:
@@ -89,6 +91,20 @@ async def get_gacha_channel(gid: int) -> int | None:
 
 async def get_log_channel(gid: int) -> int | None:
     return await get_channel(gid, K_LOG)
+
+async def get_cards_channel(gid: int) -> int | None:
+    return await get_channel(gid, K_CARDS)
+
+# FIX: was missing — used by goonneffa/moderation.py
+async def get_media_channels(gid: int) -> set[int]:
+    return await get_channels(gid, K_MEDIA)
+
+async def get_bot_channels(gid: int) -> set[int]:
+    return await get_channels(gid, K_BOT)
+
+async def get_nsfw_channels(gid: int) -> set[int]:
+    return await get_channels(gid, K_NSFW)
+
 
 async def is_judge(member: discord.Member) -> bool:
     if member.guild_permissions.administrator: return True

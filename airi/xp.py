@@ -1,7 +1,7 @@
 # airi/xp.py — updated for multi-guild economy calls
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 import random
 import config
 import db
@@ -38,7 +38,7 @@ class XPCog(commands.Cog, name="XP"):
 
     def _on_cooldown(self, guild_id, user_id):
         key = f"{guild_id}_{user_id}"
-        now = datetime.utcnow().timestamp()
+        import time; now = time.time()
         if now - self._cooldowns.get(key, 0) < XP_COOLDOWN:
             return True
         self._cooldowns[key] = now

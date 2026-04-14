@@ -3,7 +3,7 @@ import discord
 from discord.ext import commands
 import random
 import asyncio
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import db
 from utils import _err, C_GACHA, C_SOCIAL
 from airi.guild_config import check_channel
@@ -12,13 +12,14 @@ from airi.constants import RARITY_STYLE, CARD_FLAVOUR, PERSONALITY_TAGS, KAKERA_
 
 SINGLE_COST = 300
 MULTI_COST  = 2500
-PITY_AT     = 40
+PITY_AT     = 60  # increased from 40 — legendary less frequent
 
 # Cache pools per guild+gender (in‑memory)
 _char_cache: dict[str, dict] = {}  # key: f"{gid}_{gender}" → {"data": ..., "fetched_at": ...}
 CACHE_TTL_SECONDS = 7200
 
-RARITY_WEIGHTS = [("common",50),("rare",28),("epic",14),("legendary",6),("mythic",2)]
+# Rebalanced: legendary/mythic harder to get
+RARITY_WEIGHTS = [("common",55),("rare",28),("epic",12),("legendary",4),("mythic",1)]
 
 def _roll_rarity(pity: int) -> str:
     if pity >= PITY_AT: return "legendary"
@@ -34,13 +35,13 @@ async def _get_char_pool(gid: int, gender: str) -> dict:
     cache_key = f"{gid}_{gender}"
     cached = _char_cache.get(cache_key)
     if cached:
-        age = (datetime.utcnow() - cached["fetched_at"]).total_seconds()
+        age = (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds()
         if age < CACHE_TTL_SECONDS:
             return cached["data"]
     
     from airi.anilist import fetch_characters_for_board
     data = await fetch_characters_for_board(gender)
-    _char_cache[cache_key] = {"data": data, "fetched_at": datetime.utcnow()}
+    _char_cache[cache_key] = {"data": data, "fetched_at": datetime.now(timezone.utc)}
     return data
 
 def _card_embed(char: dict, owner: discord.Member, card_id: int) -> discord.Embed:
@@ -68,7 +69,7 @@ def _card_embed(char: dict, owner: discord.Member, card_id: int) -> discord.Embe
         + (f"💖 {char.get('favourites',0):,} favourites\n" if char.get("favourites") else "")
         + bio_line
         + f"\n\n*\"{flavour}\"*"
-    ), color=style["color"], timestamp=datetime.utcnow())
+    ), color=style["color"], timestamp=datetime.now(timezone.utc))
     if char.get("image"):
         e.set_image(url=char["image"])
     e.set_author(name=owner.display_name, icon_url=owner.display_avatar.url)
@@ -116,18 +117,22 @@ class WaifuBoardView(discord.ui.View):
         super().__init__(timeout=None)
         self._gid    = guild_id
         self._gender = gender
-        # These will be populated on each interaction
         self._all_chars = []
         self._featured  = set()
+        # FIX: encode gender into custom_ids so female and male boards
+        # don't share the same ID (which would route all clicks to one view)
+        for child in self.children:
+            if hasattr(child, "custom_id") and child.custom_id:
+                child.custom_id = child.custom_id.replace("waifu_pull_", f"waifu_pull_{gender}_")
 
     async def _ensure_pool(self):
         """Load the character pool from cache (or re-fetch) into the view's attributes."""
         cache_key = f"{self._gid}_{self._gender}"
         cached = _char_cache.get(cache_key)
-        if not cached or (datetime.utcnow() - cached["fetched_at"]).total_seconds() >= CACHE_TTL_SECONDS:
+        if not cached or (datetime.now(timezone.utc) - cached["fetched_at"]).total_seconds() >= CACHE_TTL_SECONDS:
             from airi.anilist import fetch_characters_for_board
             pool_data = await fetch_characters_for_board(self._gender)
-            _char_cache[cache_key] = {"data": pool_data, "fetched_at": datetime.utcnow()}
+            _char_cache[cache_key] = {"data": pool_data, "fetched_at": datetime.now(timezone.utc)}
         else:
             pool_data = cached["data"]
         self._all_chars = pool_data.get("all", [])
@@ -177,7 +182,7 @@ class WaifuBoardView(discord.ui.View):
         for _ in range(count):
             # 20% chance to pull a featured (banner) character
             featured_pool = [c for c in char_pool if c.get("id") in self._featured]
-            if featured_pool and random.random() < 0.20:
+            if featured_pool and random.random() < 0.10:  # FIX: reduced from 20%
                 char = random.choice(featured_pool)
                 rarity = char["rarity"]
             else:
@@ -263,7 +268,7 @@ class WaifuBoardView(discord.ui.View):
             e = discord.Embed(
                 title=f"🎴 {count}× Pull Results",
                 description="\n".join(lines),
-                color=color, timestamp=datetime.utcnow(),
+                color=color, timestamp=datetime.now(timezone.utc),
             )
             if best and best["char"].get("image"):
                 e.set_image(url=best["char"]["image"])
@@ -294,7 +299,7 @@ async def _post_board(ctx, gender: str):
 
     # Cache for this guild
     cache_key = f"{ctx.guild.id}_{gender}"
-    _char_cache[cache_key] = {"data": pool_data, "fetched_at": datetime.utcnow()}
+    _char_cache[cache_key] = {"data": pool_data, "fetched_at": datetime.now(timezone.utc)}
 
     embed = _board_embed(gender, pool_data)
     view  = WaifuBoardView(ctx.guild.id, gender)   # persistent view, no pool data stored
@@ -390,7 +395,11 @@ class AnimeCharsCog(commands.Cog, name="AnimeChars"):
                     def __init__(self__): super().__init__(timeout=60); self__.add_item(sel)
                 await i.response.send_message("Give to:", view=GV(), ephemeral=True)
 
-        await ctx.send(embed=build(0), view=ColView())
+        # Use CardNavView (unified view with boost/sell/give/filter)
+        view = CardNavView(cards, uid, gid, target, ctx.bot)
+        view._page = 0
+        view._update_btns()
+        await ctx.send(embed=view.build_embed(), view=view)
 
     @commands.hybrid_command(name="waifuinfo", aliases=["wcard"], description="View a waifu card by ID")
     async def waifuinfo(self, ctx, card_id: int):
@@ -410,6 +419,40 @@ class AnimeCharsCog(commands.Cog, name="AnimeChars"):
         e = _card_embed(char_data, owner, card_id)
         if row.get("obtained_at"):
             e.add_field(name="Obtained", value=discord.utils.format_dt(row["obtained_at"],"R"), inline=True)
+        await ctx.send(embed=e)
+
+    @commands.hybrid_command(name="cardmarket", aliases=["cmarket", "cm"], description="Browse the card marketplace")
+    async def cardmarket(self, ctx):
+        """Browse active card listings."""
+        gid = ctx.guild.id
+        rows = await db.pool.fetch("""
+            SELECT cm.*, aw.char_name, aw.rarity, aw.series, aw.char_image
+            FROM card_market cm JOIN anime_waifus aw ON aw.id = cm.card_id
+            WHERE cm.guild_id=$1 AND cm.status='active'
+            ORDER BY cm.listed_at DESC LIMIT 20
+        """, gid)
+        if not rows:
+            return await ctx.send(embed=discord.Embed(
+                description="No active card listings. Use `!waifucollection` → Sell to list a card!",
+                color=C_SOCIAL,
+            ))
+        from airi.constants import RARITY_STYLE
+        e = discord.Embed(title="🎴 Card Marketplace", color=C_SOCIAL)
+        for r in rows[:10]:
+            style = RARITY_STYLE.get(r["rarity"], RARITY_STYLE["common"])
+            seller = ctx.guild.get_member(r["seller_id"])
+            sname  = seller.display_name if seller else f"ID {r['seller_id']}"
+            e.add_field(
+                name=f"{style['glow']} #{r['id']} — {r['char_name']}",
+                value=(
+                    f"*{r['series']}* · **{r['rarity'].title()}** {style['hue']}\n"
+                    f"💰 {r['price']:,} coins"
+                    + (f" · Bid from {r['min_bid']:,}" if r['min_bid'] else "")
+                    + f"\nSeller: {sname}"
+                ),
+                inline=True,
+            )
+        e.set_footer(text=f"Showing {min(len(rows), 10)} active listings")
         await ctx.send(embed=e)
 
     @commands.hybrid_command(name="waifulb", aliases=["waifutop"], description="Waifu card collection leaderboard")
@@ -433,3 +476,412 @@ class AnimeCharsCog(commands.Cog, name="AnimeChars"):
         e = discord.Embed(title="🎴 Card Leaderboard", description="\n".join(lines) or "No data.", color=C_SOCIAL)
         e.set_footer(text="Mythic=100 · Legendary=20 · Epic=5 · Rare=2 · Common=1")
         await ctx.send(embed=e)
+
+# ─────────────────────────────────────────────────────────────────────
+# Card navigation view (inline from boards or !waifucollection)
+# ─────────────────────────────────────────────────────────────────────
+from airi.constants import RARITY_STYLE
+
+class CardNavView(discord.ui.View):
+    """
+    Paginated card browser with:
+    • Prev / Next navigation
+    • Boost button (per-card XP/kakera boost)
+    • Sell button (list on card market)
+    • Give button (transfer card)
+    • Back button to return to calling view
+    """
+    def __init__(self, cards: list[dict], owner_id: int, gid: int,
+                 owner: discord.Member, bot, page: int = 0):
+        super().__init__(timeout=300)
+        self._cards    = cards
+        self._owner_id = owner_id
+        self._gid      = gid
+        self._owner    = owner
+        self._bot      = bot
+        self._page     = page
+        self._update_btns()
+
+    def _update_btns(self):
+        self.prev_btn.disabled = self._page == 0
+        self.next_btn.disabled = self._page == len(self._cards) - 1
+        # Only owner can boost/sell/give
+        is_owner = True  # enforced in callbacks
+
+    def build_embed(self) -> discord.Embed:
+        c = self._cards[self._page]
+        rarity = c.get("rarity", "common")
+        style  = RARITY_STYLE.get(rarity, RARITY_STYLE["common"])
+        gender = c.get("gender", "female")
+        type_lbl = "🌸 Waifu" if gender == "female" else "⚔️ Husbando"
+        boosted = c.get("boosted_until")
+        boost_txt = ""
+        if boosted and boosted > datetime.now(timezone.utc):
+            boost_txt = f"\n⚡ **Boosted** until {discord.utils.format_dt(boosted, 'R')}"
+
+        e = discord.Embed(
+            title=f"{style['glow']} {style['stars']} {rarity.upper()} {style['glow']}",
+            description=(
+                f"**{c.get('char_name', 'Unknown')}**\n"
+                f"{type_lbl}  ·  *{c.get('series', 'Unknown')}*\n\n"
+                f"✨ {style['aura']}  {style['hue']}\n"
+                + (f"🎀 {c.get('personality_tag', '')}\n" if c.get("personality_tag") else "")
+                + (f"💖 {c.get('favourites', 0):,} favourites\n" if c.get("favourites") else "")
+                + boost_txt
+            ),
+            color=style["color"],
+            timestamp=datetime.now(timezone.utc),
+        )
+        if c.get("char_image"):
+            e.set_image(url=c["char_image"])
+        e.set_author(name=self._owner.display_name, icon_url=self._owner.display_avatar.url)
+        e.set_footer(
+            text=f"Card #{c['id']}  ·  {self._page+1}/{len(self._cards)} cards  ·  "
+                 f"Affection: {c.get('affection', 0)}"
+        )
+        return e
+
+    @discord.ui.button(label="◀", style=discord.ButtonStyle.secondary, row=0)
+    async def prev_btn(self, interaction: discord.Interaction, btn):
+        if interaction.user.id != self._owner_id:
+            return await interaction.response.send_message("Not your cards.", ephemeral=True)
+        self._page -= 1
+        self._update_btns()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="▶", style=discord.ButtonStyle.secondary, row=0)
+    async def next_btn(self, interaction: discord.Interaction, btn):
+        if interaction.user.id != self._owner_id:
+            return await interaction.response.send_message("Not your cards.", ephemeral=True)
+        self._page += 1
+        self._update_btns()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+    @discord.ui.button(label="⚡ Boost", style=discord.ButtonStyle.primary, row=1)
+    async def boost_btn(self, interaction: discord.Interaction, btn):
+        if interaction.user.id != self._owner_id:
+            return await interaction.response.send_message("Not your cards.", ephemeral=True)
+        c = self._cards[self._page]
+        cid = c["id"]
+        # Check if already boosted
+        now = datetime.now(timezone.utc)
+        if c.get("boosted_until") and c["boosted_until"] > now:
+            return await interaction.response.send_message(
+                f"⚡ This card is already boosted until {discord.utils.format_dt(c['boosted_until'], 'R')}!",
+                ephemeral=True,
+            )
+        # Cost: 200 coins to boost for 24h
+        BOOST_COST = 200
+        row = await db.pool.fetchrow(
+            "UPDATE economy SET balance=balance-$1 WHERE guild_id=$2 AND user_id=$3 AND balance>=$1 RETURNING balance",
+            BOOST_COST, self._gid, self._owner_id,
+        )
+        if not row:
+            return await interaction.response.send_message(
+                f"❌ Need **{BOOST_COST}** coins to boost this card.", ephemeral=True
+            )
+        until = now + timedelta(hours=24)
+        await db.pool.execute(
+            "UPDATE anime_waifus SET boosted_until=$1 WHERE id=$2", until, cid
+        )
+        # Update local cache
+        self._cards[self._page]["boosted_until"] = until
+        await interaction.response.edit_message(
+            embed=self.build_embed(),
+            view=self,
+        )
+        await interaction.followup.send(
+            f"⚡ **{c.get('char_name')}** boosted for 24h! "
+            f"This card now earns +50% kakera on interactions. (-{BOOST_COST} 🪙)",
+            ephemeral=True,
+        )
+
+    @discord.ui.button(label="💰 Sell", style=discord.ButtonStyle.success, row=1)
+    async def sell_btn(self, interaction: discord.Interaction, btn):
+        if interaction.user.id != self._owner_id:
+            return await interaction.response.send_message("Not your cards.", ephemeral=True)
+        c = self._cards[self._page]
+
+        class SellModal(discord.ui.Modal, title=f"Sell {c.get('char_name', 'Card')}"):
+            price_in = discord.ui.TextInput(
+                label="Buyout price (coins)", placeholder="e.g. 5000", required=True
+            )
+            bid_in = discord.ui.TextInput(
+                label="Starting bid (optional, leave blank = fixed price)",
+                placeholder="e.g. 1000", required=False,
+            )
+            async def on_submit(m_self, inter2):
+                await inter2.response.defer(ephemeral=True)
+                raw_p = m_self.price_in.value.strip().replace(",", "")
+                raw_b = m_self.bid_in.value.strip().replace(",", "")
+                if not raw_p.isdigit():
+                    return await inter2.followup.send("❌ Invalid price.", ephemeral=True)
+                price = int(raw_p)
+                min_bid = int(raw_b) if raw_b.isdigit() else None
+                if min_bid and min_bid >= price:
+                    return await inter2.followup.send("❌ Starting bid must be less than price.", ephemeral=True)
+                await _do_card_sell(inter2, self._gid, self._owner_id, c, price, min_bid)
+
+        await interaction.response.send_modal(SellModal())
+
+    @discord.ui.button(label="🎁 Give", style=discord.ButtonStyle.secondary, row=1)
+    async def give_btn(self, interaction: discord.Interaction, btn):
+        if interaction.user.id != self._owner_id:
+            return await interaction.response.send_message("Not your cards.", ephemeral=True)
+        c = self._cards[self._page]
+        sel = discord.ui.UserSelect(placeholder="Give this card to…")
+        async def sel_cb(i2: discord.Interaction):
+            rec = sel.values[0]
+            if rec.id == self._owner_id or rec.bot:
+                return await i2.response.send_message("❌ Invalid target.", ephemeral=True)
+            await db.pool.execute(
+                "UPDATE anime_waifus SET owner_id=$1 WHERE id=$2 AND owner_id=$3",
+                rec.id, c["id"], self._owner_id,
+            )
+            del self._cards[self._page]
+            self._page = max(0, self._page - 1)
+            for item in gv.children: item.disabled = True
+            await i2.response.edit_message(
+                content=f"✅ **{c.get('char_name')}** given to {rec.mention}!", view=gv
+            )
+            if self._cards:
+                self._update_btns()
+                await i2.followup.send(embed=self.build_embed(), view=self, ephemeral=True)
+        sel.callback = sel_cb
+        class gv(discord.ui.View):
+            def __init__(gv_self): super().__init__(timeout=60); gv_self.add_item(sel)
+        await interaction.response.send_message("Give card to:", view=gv(), ephemeral=True)
+
+    @discord.ui.button(label="🔍 Filter", style=discord.ButtonStyle.secondary, row=2)
+    async def filter_btn(self, interaction: discord.Interaction, btn):
+        """Jump to a specific character by name."""
+        if interaction.user.id != self._owner_id:
+            return await interaction.response.send_message("Not your cards.", ephemeral=True)
+
+        nav = self  # capture CardNavView reference for closure
+        class FilterModal(discord.ui.Modal, title="Find a Card"):
+            name_in = discord.ui.TextInput(
+                label="Character name (partial OK)",
+                placeholder="e.g. Rem, Mikasa…",
+                required=True, max_length=50,
+            )
+            async def on_submit(m_self, inter2):
+                await inter2.response.defer(ephemeral=True)
+                query = m_self.name_in.value.strip().lower()
+                matches = [i for i, card in enumerate(nav._cards)
+                           if query in card.get("char_name", "").lower()]
+                if not matches:
+                    return await inter2.followup.send(
+                        f"❌ No card matching '{m_self.name_in.value}' found.", ephemeral=True
+                    )
+                nav._page = matches[0]
+                nav._update_btns()
+                await inter2.followup.send(
+                    embed=nav.build_embed(), view=nav, ephemeral=True
+                )
+
+        await interaction.response.send_modal(FilterModal())
+
+
+async def _do_card_sell(interaction: discord.Interaction, gid: int, seller_id: int,
+                         card: dict, price: int, min_bid: int | None):
+    """List a card on the card_market table."""
+    # Verify ownership
+    row = await db.pool.fetchrow(
+        "SELECT id FROM anime_waifus WHERE id=$1 AND owner_id=$2 AND guild_id=$3",
+        card["id"], seller_id, gid,
+    )
+    if not row:
+        return await interaction.followup.send("❌ Card not found or not yours.", ephemeral=True)
+    # Check not already listed
+    existing = await db.pool.fetchrow(
+        "SELECT id FROM card_market WHERE card_id=$1 AND status='active'", card["id"]
+    )
+    if existing:
+        return await interaction.followup.send("❌ This card is already listed.", ephemeral=True)
+    from datetime import timedelta
+    expires = datetime.now(timezone.utc) + timedelta(hours=72)
+    listing = await db.pool.fetchrow("""
+        INSERT INTO card_market (guild_id, seller_id, card_id, price, min_bid, expires_at)
+        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
+    """, gid, seller_id, card["id"], price, min_bid, expires)
+    lid = listing["id"]
+
+    # Try to post to cards channel
+    from airi.guild_config import get_cards_channel
+    cards_ch_id = await get_cards_channel(gid)
+    if cards_ch_id:
+        ch = interaction.client.get_channel(cards_ch_id)
+        if ch:
+            e = _card_listing_embed(card, interaction.user, price, min_bid, lid)
+            view = CardListingView(lid, seller_id, price, min_bid)
+            msg = await ch.send(embed=e, view=view)
+            await db.pool.execute(
+                "UPDATE card_market SET channel_id=$1, message_id=$2 WHERE id=$3",
+                ch.id, msg.id, lid,
+            )
+            await interaction.followup.send(
+                f"✅ **{card.get('char_name')}** listed in {ch.mention} for **{price:,}** coins!",
+                ephemeral=True,
+            )
+            return
+    await interaction.followup.send(
+        f"✅ **{card.get('char_name')}** listed for **{price:,}** coins! (ID #{lid})\n"
+        f"Set a `#cards` channel with `!config` to display listings publicly.",
+        ephemeral=True,
+    )
+
+
+def _card_listing_embed(card: dict, seller: discord.Member, price: int,
+                         min_bid: int | None, lid: int) -> discord.Embed:
+    from airi.constants import RARITY_STYLE
+    rarity = card.get("rarity", "common")
+    style  = RARITY_STYLE.get(rarity, RARITY_STYLE["common"])
+    e = discord.Embed(
+        title=f"{style['glow']} #{lid} — {card.get('char_name', 'Unknown Card')}",
+        description=(
+            f"*{card.get('series', 'Unknown')}*\n"
+            f"Rarity: **{rarity.title()}** {style['hue']}\n\n"
+            f"💰 **Price:** {price:,} coins"
+            + (f"\n🎯 **Starting bid:** {min_bid:,} coins" if min_bid else "")
+            + f"\n\n👤 Seller: {seller.mention}"
+        ),
+        color=style["color"],
+    )
+    if card.get("char_image"):
+        e.set_thumbnail(url=card["char_image"])
+    e.set_footer(text=f"Card #{card.get('id')} · Listing #{lid} · Expires in 72h")
+    return e
+
+
+class CardListingView(discord.ui.View):
+    """Persistent buy/bid view for a card market listing."""
+    def __init__(self, lid: int, seller_id: int, price: int, min_bid: int | None):
+        super().__init__(timeout=None)
+        self._lid      = lid
+        self._seller   = seller_id
+        self._price    = price
+        self._has_bid  = min_bid is not None
+        for child in self.children:
+            if hasattr(child, "custom_id") and child.custom_id:
+                child.custom_id = f"card_listing_{lid}_{child.custom_id}"
+
+    @discord.ui.button(label="💰 Buy Now", style=discord.ButtonStyle.success, custom_id="buy")
+    async def buy_now(self, interaction: discord.Interaction, btn):
+        await interaction.response.defer(ephemeral=True)
+        uid = interaction.user.id
+        gid = interaction.guild_id
+        row = await db.pool.fetchrow(
+            "SELECT * FROM card_market WHERE id=$1 AND status='active'", self._lid
+        )
+        if not row:
+            return await interaction.followup.send("❌ Listing no longer active.", ephemeral=True)
+        if row["seller_id"] == uid:
+            return await interaction.followup.send("❌ Can't buy your own listing.", ephemeral=True)
+        paid = await db.pool.fetchrow(
+            "UPDATE economy SET balance=balance-$1 WHERE guild_id=$2 AND user_id=$3 AND balance>=$1 RETURNING balance",
+            row["price"], gid, uid,
+        )
+        if not paid:
+            return await interaction.followup.send(
+                f"❌ Need **{row['price']:,}** coins.", ephemeral=True
+            )
+        fee    = max(1, int(row["price"] * 0.05))
+        payout = row["price"] - fee
+        await db.pool.execute(
+            "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+            payout, gid, row["seller_id"],
+        )
+        # Transfer card
+        await db.pool.execute(
+            "UPDATE anime_waifus SET owner_id=$1 WHERE id=$2", uid, row["card_id"]
+        )
+        await db.pool.execute("UPDATE card_market SET status='sold' WHERE id=$1", self._lid)
+        card_row = await db.pool.fetchrow("SELECT char_name FROM anime_waifus WHERE id=$1", row["card_id"])
+        cname = card_row["char_name"] if card_row else "Unknown"
+        await interaction.followup.send(
+            f"✅ You bought **{cname}** for **{row['price']:,}** coins!", ephemeral=True
+        )
+        from utils import log_txn
+        await log_txn(interaction.client, gid, "Card Purchase", interaction.user,
+                      interaction.guild.get_member(row["seller_id"]) or row["seller_id"],
+                      row["price"], f"Card: {cname}")
+
+    @discord.ui.button(label="🎯 Bid", style=discord.ButtonStyle.primary, custom_id="bid")
+    async def bid_now(self, interaction: discord.Interaction, btn):
+        if not self._has_bid:
+            return await interaction.response.send_message(
+                "This listing is fixed-price only.", ephemeral=True
+            )
+        class BidM(discord.ui.Modal, title="Place a Bid"):
+            amount_in = discord.ui.TextInput(label="Bid amount (coins)", required=True)
+            async def on_submit(m_self, inter2):
+                await inter2.response.defer(ephemeral=True)
+                raw = m_self.amount_in.value.strip().replace(",", "")
+                if not raw.isdigit():
+                    return await inter2.followup.send("❌ Invalid amount.", ephemeral=True)
+                amount = int(raw)
+                uid = inter2.user.id
+                gid = inter2.guild_id
+                row = await db.pool.fetchrow(
+                    "SELECT * FROM card_market WHERE id=$1 AND status='active'", self._lid
+                )
+                if not row:
+                    return await inter2.followup.send("❌ Listing ended.", ephemeral=True)
+                if row["seller_id"] == uid:
+                    return await inter2.followup.send("❌ Can't bid on your own card.", ephemeral=True)
+                cur = row["current_bid"] or row["min_bid"] or 0
+                if amount <= cur:
+                    return await inter2.followup.send(f"❌ Must bid more than **{cur:,}**.", ephemeral=True)
+                paid = await db.pool.fetchrow(
+                    "UPDATE economy SET balance=balance-$1 WHERE guild_id=$2 AND user_id=$3 AND balance>=$1 RETURNING balance",
+                    amount, gid, uid,
+                )
+                if not paid:
+                    return await inter2.followup.send(f"❌ Insufficient coins.", ephemeral=True)
+                # Refund previous bidder
+                if row["current_bidder"] and row["current_bid"]:
+                    await db.pool.execute(
+                        "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+                        row["current_bid"], gid, row["current_bidder"],
+                    )
+                await db.pool.execute(
+                    "UPDATE card_market SET current_bid=$1, current_bidder=$2 WHERE id=$3",
+                    amount, uid, self._lid,
+                )
+                await inter2.followup.send(
+                    f"✅ Bid of **{amount:,}** coins placed!", ephemeral=True
+                )
+        await interaction.response.send_modal(BidM())
+
+    @discord.ui.button(label="🔨 End Listing", style=discord.ButtonStyle.danger, custom_id="end")
+    async def end_listing(self, interaction: discord.Interaction, btn):
+        await interaction.response.defer(ephemeral=True)
+        if interaction.user.id != self._seller and not interaction.user.guild_permissions.manage_guild:
+            return await interaction.followup.send("Only the seller can end this listing.", ephemeral=True)
+        row = await db.pool.fetchrow(
+            "SELECT * FROM card_market WHERE id=$1 AND status='active'", self._lid
+        )
+        if not row:
+            return await interaction.followup.send("❌ Listing not found.", ephemeral=True)
+        gid = interaction.guild_id
+        if row["current_bidder"] and row["current_bid"]:
+            # Award card to highest bidder
+            fee    = max(1, int(row["current_bid"] * 0.05))
+            payout = row["current_bid"] - fee
+            await db.pool.execute(
+                "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+                payout, gid, row["seller_id"],
+            )
+            await db.pool.execute(
+                "UPDATE anime_waifus SET owner_id=$1 WHERE id=$2",
+                row["current_bidder"], row["card_id"],
+            )
+            winner = interaction.guild.get_member(row["current_bidder"])
+            result = f"Sold to {winner.mention if winner else row['current_bidder']} for **{row['current_bid']:,}** coins!"
+        else:
+            result = "No bids — card returned to seller."
+        await db.pool.execute("UPDATE card_market SET status='ended' WHERE id=$1", self._lid)
+        await interaction.followup.send(
+            embed=discord.Embed(title="🔨 Listing Ended", description=result, color=0x533483),
+        )

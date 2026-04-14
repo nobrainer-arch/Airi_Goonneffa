@@ -16,6 +16,13 @@ async def init():
                 PRIMARY KEY (guild_id, key)
             );
 
+            CREATE TABLE IF NOT EXISTS guild_setup (
+                guild_id   BIGINT PRIMARY KEY,
+                setup_done BOOLEAN NOT NULL DEFAULT FALSE,
+                setup_by   BIGINT,
+                setup_at   TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS economy (
                 guild_id     BIGINT NOT NULL,
                 user_id      BIGINT NOT NULL,
@@ -145,21 +152,60 @@ async def init():
                 PRIMARY KEY (guild_id, user_id, item_key)
             );
 
+            CREATE TABLE IF NOT EXISTS protection (
+                guild_id    BIGINT NOT NULL,
+                user_id     BIGINT NOT NULL,
+                expires_at  TIMESTAMP NOT NULL,
+                PRIMARY KEY (guild_id, user_id)
+            );
+
             CREATE TABLE IF NOT EXISTS auction_house (
+                id                  SERIAL PRIMARY KEY,
+                guild_id            BIGINT NOT NULL,
+                seller_id           BIGINT NOT NULL,
+                item_key            TEXT   NOT NULL,
+                item_name           TEXT   NOT NULL,
+                quantity            INTEGER NOT NULL DEFAULT 1,
+                rarity              TEXT   NOT NULL DEFAULT 'common',
+                min_bid             INTEGER,
+                current_bid         INTEGER,
+                current_bidder_id   BIGINT,
+                price               INTEGER NOT NULL DEFAULT 0,
+                status              TEXT   NOT NULL DEFAULT 'active',
+                expires_at          TIMESTAMP NOT NULL,
+                channel_id          BIGINT,
+                message_id          BIGINT
+            );
+
+            CREATE TABLE IF NOT EXISTS card_market (
                 id          SERIAL PRIMARY KEY,
                 guild_id    BIGINT NOT NULL,
                 seller_id   BIGINT NOT NULL,
-                item_key    TEXT   NOT NULL,
-                item_name   TEXT   NOT NULL,
-                quantity    INTEGER NOT NULL DEFAULT 1,
-                min_bid     INTEGER NOT NULL DEFAULT 0,
-                buyout      INTEGER NOT NULL DEFAULT 0,
-                current_bid INTEGER NOT NULL DEFAULT 0,
-                bidder_id   BIGINT,
+                card_id     INTEGER NOT NULL REFERENCES anime_waifus(id) ON DELETE CASCADE,
+                price       INTEGER NOT NULL,
+                min_bid     INTEGER,
+                current_bid INTEGER,
+                current_bidder BIGINT,
                 status      TEXT   NOT NULL DEFAULT 'active',
+                listed_at   TIMESTAMP NOT NULL DEFAULT NOW(),
                 expires_at  TIMESTAMP NOT NULL,
                 channel_id  BIGINT,
                 message_id  BIGINT
+            );
+
+            CREATE TABLE IF NOT EXISTS waifu_market (
+                id              SERIAL PRIMARY KEY,
+                guild_id        BIGINT NOT NULL,
+                seller_id       BIGINT NOT NULL,
+                waifu_id        BIGINT NOT NULL,
+                min_bid         INTEGER NOT NULL DEFAULT 100,
+                buyout_price    INTEGER,
+                current_bid     INTEGER,
+                current_bidder  BIGINT,
+                status          TEXT   NOT NULL DEFAULT 'active',
+                listed_at       TIMESTAMP NOT NULL DEFAULT NOW(),
+                channel_id      BIGINT,
+                message_id      BIGINT
             );
 
             CREATE TABLE IF NOT EXISTS orders (
@@ -183,13 +229,13 @@ async def init():
             );
 
             CREATE TABLE IF NOT EXISTS businesses (
-                id          SERIAL PRIMARY KEY,
-                guild_id    BIGINT NOT NULL,
-                owner_id    BIGINT NOT NULL,
-                manager_id  BIGINT,
-                name        TEXT   NOT NULL,
-                biz_type    TEXT   NOT NULL,
-                level       INTEGER NOT NULL DEFAULT 1,
+                id           SERIAL PRIMARY KEY,
+                guild_id     BIGINT NOT NULL,
+                owner_id     BIGINT NOT NULL,
+                manager_id   BIGINT,
+                name         TEXT   NOT NULL,
+                biz_type     TEXT   NOT NULL,
+                level        INTEGER NOT NULL DEFAULT 1,
                 last_collect TIMESTAMP
             );
 
@@ -224,6 +270,7 @@ async def init():
                 personality_tag TEXT,
                 card_wrap    TEXT   DEFAULT 'default',
                 affection    INTEGER DEFAULT 0,
+                boosted_until TIMESTAMP,
                 obtained_at  TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
@@ -265,9 +312,10 @@ async def init():
                 guild_id   BIGINT NOT NULL,
                 user_id    BIGINT NOT NULL,
                 action     TEXT   NOT NULL,
-                detail     TEXT   NOT NULL DEFAULT '',
-                amount     INTEGER NOT NULL DEFAULT 0,
-                logged_at  TIMESTAMP NOT NULL DEFAULT NOW()
+                detail     TEXT,
+                amount     INTEGER,
+                logged_at  TIMESTAMP NOT NULL DEFAULT NOW(),
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
             CREATE TABLE IF NOT EXISTS afk (
@@ -283,6 +331,11 @@ async def init():
                 gender  TEXT   NOT NULL DEFAULT 'u'
             );
 
+            CREATE TABLE IF NOT EXISTS user_prefs (
+                user_id BIGINT PRIMARY KEY,
+                gender  TEXT   NOT NULL DEFAULT 'u'
+            );
+
             CREATE TABLE IF NOT EXISTS online_streaks (
                 guild_id             BIGINT NOT NULL,
                 user_id              BIGINT NOT NULL,
@@ -291,10 +344,28 @@ async def init():
                 last_active          TIMESTAMP,
                 PRIMARY KEY (guild_id, user_id)
             );
+
+            CREATE TABLE IF NOT EXISTS mod_cases (
+                id         SERIAL PRIMARY KEY,
+                guild_id   BIGINT NOT NULL,
+                mod_id     BIGINT NOT NULL,
+                target_id  BIGINT NOT NULL,
+                action     TEXT   NOT NULL,
+                reason     TEXT   NOT NULL DEFAULT 'No reason given',
+                duration   TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            );
         """)
 
     # Safe migrations for fresh or existing DBs
     migrations = [
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS channel_id BIGINT",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS message_id BIGINT",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS listing_channel_id BIGINT",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS listing_message_id BIGINT",
+        # Copy old naming to new naming if populated
+        "UPDATE auction_house SET channel_id=listing_channel_id WHERE channel_id IS NULL AND listing_channel_id IS NOT NULL",
+        "UPDATE auction_house SET message_id=listing_message_id WHERE message_id IS NULL AND listing_message_id IS NOT NULL",
         "ALTER TABLE economy ADD COLUMN IF NOT EXISTS kakera INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE economy ADD COLUMN IF NOT EXISTS proposals_made INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE economy ADD COLUMN IF NOT EXISTS last_daily_reminder DATE",
@@ -311,8 +382,15 @@ async def init():
         "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS personality_tag TEXT",
         "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS card_wrap TEXT DEFAULT 'default'",
         "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS affection INTEGER DEFAULT 0",
+        "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS boosted_until TIMESTAMP",
         "ALTER TABLE claims ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP NOT NULL DEFAULT NOW()",
-        "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS last_collected TIMESTAMP",
+        # FIX: was 'last_collected' in original migration (wrong column name)
+        "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS last_collect TIMESTAMP",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS rarity TEXT NOT NULL DEFAULT 'common'",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS min_bid INTEGER",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS current_bid INTEGER",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS current_bidder_id BIGINT",
+        "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS price INTEGER NOT NULL DEFAULT 0",
     ]
     async with pool.acquire() as conn:
         for sql in migrations:

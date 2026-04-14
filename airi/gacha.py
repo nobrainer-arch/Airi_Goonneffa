@@ -1,7 +1,7 @@
 # airi/gacha.py — Item gacha, PERSISTENT board (survives restarts)
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 import random
 import db
 from utils import _err, C_GACHA, log_txn
@@ -11,8 +11,8 @@ from airi.inventory import add_item, ITEMS, RARITY_STAR
 
 SINGLE_COST = 500
 MULTI_COST  = 4500
-PITY_AT     = 50
-RARITY_WEIGHTS = [("common",50),("rare",28),("epic",14),("legendary",6),("mythic",2)]
+PITY_AT     = 70  # increased
+RARITY_WEIGHTS = [("common",55),("rare",28),("epic",12),("legendary",4),("mythic",1)]
 RARITY_COLORS  = {
     "common":0x808080,"rare":0x3498db,"epic":0x9b59b6,"legendary":0xf1c40f,"mythic":0xff66ff
 }
@@ -107,7 +107,7 @@ class GachaBoardView(discord.ui.View):
                 title=f"🎰 {RARITY_STAR.get(rarity,'⬜')} {rarity.upper()}",
                 description=f"{interaction.user.mention} rolled...\n\n{result_txt}",
                 color=RARITY_COLORS.get(rarity, C_GACHA),
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
             e.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
             e.set_footer(text=f"Pity: {pity}/{PITY_AT} · Spent {cost:,} coins")
@@ -122,7 +122,7 @@ class GachaBoardView(discord.ui.View):
                 title="🎰 10× Gacha Pull",
                 description="\n".join(r[1] for r in results),
                 color=RARITY_COLORS.get(best[0], C_GACHA),
-                timestamp=datetime.utcnow(),
+                timestamp=datetime.now(timezone.utc),
             )
             e.set_author(name=interaction.user.display_name, icon_url=interaction.user.display_avatar.url)
             e.set_footer(text=f"Pity: {pity}/{PITY_AT} · Spent {cost:,} coins · Items in !inventory")

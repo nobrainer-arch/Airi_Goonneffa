@@ -1,12 +1,18 @@
 # airi/social.py — Social commands: profile, rep, claim, release, mywaifu, waifu, lb
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import db
 from utils import _err, C_SOCIAL, C_ECONOMY, C_SUCCESS, C_WARN
 from airi.guild_config import check_channel, get_channel, K_PROFILE
 
 CLAIM_COST  = 500
+
+def _make_tz_aware(ts):
+    if ts is None: return None
+    from datetime import timezone as _tz
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None: return ts
+    return ts.replace(tzinfo=_tz.utc)
 REP_COOLDOWN = 24  # hours
 PAGE_SIZE    = 1   # one card per page in mywaifu
 
@@ -172,7 +178,7 @@ class SocialCog(commands.Cog, name="Social"):
             icons = {"married":"💍","dating":"💘","hookup":"💋"}
             rel_txt = f"{icons.get(rel['type'],'❤️')} {rel['type'].title()} with {pm.mention if pm else f'<@{partner_id}>'}"
 
-        e = discord.Embed(color=C_SOCIAL, timestamp=datetime.utcnow())
+        e = discord.Embed(color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
         e.set_author(name=f"{'✨ '+title+'  ·  ' if title else ''}{target.display_name}", icon_url=target.display_avatar.url)
         e.set_thumbnail(url=target.display_avatar.url)
         e.add_field(name="💰 Coins",   value=f"{bal:,}", inline=True)
@@ -237,11 +243,14 @@ class SocialCog(commands.Cog, name="Social"):
         await self._do_rep(ctx, member)
 
     async def _do_rep(self, ctx, member: discord.Member):
+        from datetime import timezone as _tz
         if member == ctx.author or member.bot: return await _err(ctx, "Invalid target.")
-        gid, now = ctx.guild.id, datetime.utcnow()
+        gid, now = ctx.guild.id, datetime.now(_tz.utc)
         row = await db.pool.fetchrow("SELECT last_rep_given FROM social WHERE guild_id=$1 AND user_id=$2", gid, ctx.author.id)
         if row and row["last_rep_given"]:
-            elapsed = now - row["last_rep_given"]
+            lr = row["last_rep_given"]
+            if lr and (not hasattr(lr,'tzinfo') or lr.tzinfo is None): lr = lr.replace(tzinfo=_tz.utc)
+            elapsed = now - lr
             if elapsed < timedelta(hours=REP_COOLDOWN):
                 rem = timedelta(hours=REP_COOLDOWN) - elapsed
                 h, s = divmod(int(rem.total_seconds()), 3600)

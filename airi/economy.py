@@ -1,7 +1,7 @@
 # airi/economy.py — Economy commands with full UI
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import db
 import config
@@ -27,6 +27,13 @@ SHOP_ITEMS: dict[str, dict] = {
     "title_toxic":{"name":"☠️ Title: Toxic",     "price": 5000,  "desc": "Villain arc",                   "type": "title"},
 }
 
+def _make_tz_aware(ts):
+    """Coerce datetime to naive UTC for safe arithmetic with asyncpg results."""
+    if ts is None: return None
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+        return ts.replace(tzinfo=None)  # make naive
+    return ts
+
 async def ensure_user(conn, gid: int, uid: int):
     await conn.execute("""
         INSERT INTO economy (guild_id, user_id) VALUES ($1,$2) ON CONFLICT DO NOTHING
@@ -46,7 +53,7 @@ async def get_balance(gid: int, uid: int) -> int:
 async def is_xp_boosted(gid: int, uid: int) -> bool:
     row = await db.pool.fetchrow("SELECT xp_boost_until FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid)
     if not row or not row["xp_boost_until"]: return False
-    return datetime.utcnow() < row["xp_boost_until"]
+    return datetime.now(timezone.utc) < row["xp_boost_until"]
 
 
 # ── Balance UI ─────────────────────────────────────────────────────
@@ -77,8 +84,9 @@ class BalanceView(discord.ui.View):
             class AmtModal(discord.ui.Modal, title=f"Pay {self._target.display_name}"):
                 amount = discord.ui.TextInput(label="Amount (coins)", placeholder="e.g. 500", required=True)
                 async def on_submit(m_self, i2):
+                    await i2.response.defer(ephemeral=True)
                     raw = m_self.amount.value.strip().replace(",","")
-                    if not raw.isdigit(): return await i2.response.send_message("❌ Enter a valid number.", ephemeral=True)
+                    if not raw.isdigit(): return await i2.followup.send("❌ Enter a valid number.", ephemeral=True)
                     amt = int(raw)
                     ctx2 = type("FC",(),{"guild":i2.guild,"author":i2.user,"send":i2.followup.send,"bot":i2.client})()
                     await EconomyCog._static_pay(ctx2, self._target, amt, i2)
@@ -108,8 +116,9 @@ class BalanceView(discord.ui.View):
             class GiveM(discord.ui.Modal, title=f"Give {self._target.display_name} (max {GIVE_LIMIT:,})"):
                 amount = discord.ui.TextInput(label="Amount (max 1,000)", placeholder="e.g. 100", required=True)
                 async def on_submit(m_self, i2):
+                    await i2.response.defer(ephemeral=True)
                     raw = m_self.amount.value.strip().replace(",","")
-                    if not raw.isdigit(): return await i2.response.send_message("❌ Invalid.", ephemeral=True)
+                    if not raw.isdigit(): return await i2.followup.send("❌ Invalid.", ephemeral=True)
                     ctx2 = type("FC",(),{"guild":i2.guild,"author":i2.user,"send":i2.followup.send,"bot":i2.client})()
                     await EconomyCog._static_give(ctx2, self._target, int(raw), i2)
             return await inter.response.send_modal(GiveM())
@@ -140,13 +149,14 @@ class EconomyCog(commands.Cog, name="Economy"):
         await open_daily_panel(ctx)
 
     async def _do_daily(self, ctx):
+        from datetime import timezone as _tz
         gid, uid, now = ctx.guild.id, ctx.author.id, datetime.utcnow()
         async with db.pool.acquire() as conn:
             await ensure_user(conn, gid, uid)
         row = await db.pool.fetchrow(
             "SELECT balance,last_daily,streak,daily_boost FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
         )
-        last   = row["last_daily"]; streak = row["streak"] or 0
+        last   = _make_tz_aware(row["last_daily"]); streak = row["streak"] or 0
         if last:
             elapsed = now - last
             if elapsed < timedelta(hours=DAILY_COOLDOWN):
@@ -206,8 +216,9 @@ class EconomyCog(commands.Cog, name="Economy"):
                 class AmtM(discord.ui.Modal, title=f"Pay {rec.display_name}"):
                     amount_in = discord.ui.TextInput(label="Amount (coins)", placeholder="e.g. 500", required=True)
                     async def on_submit(m_self, i2):
+                        await i2.response.defer(ephemeral=True)
                         raw = m_self.amount_in.value.strip().replace(",","")
-                        if not raw.isdigit(): return await i2.response.send_message("❌ Invalid amount.", ephemeral=True)
+                        if not raw.isdigit(): return await i2.followup.send("❌ Invalid amount.", ephemeral=True)
                         await EconomyCog._static_pay(
                             type("FC",(),{"guild":i2.guild,"author":i2.user,"send":i2.followup.send,"bot":i2.client})(),
                             rec, int(raw), i2
@@ -417,7 +428,7 @@ async def _do_buy(ctx_or_inter, key: str):
     elif itype in ("xp_boost","xp_boost24"):
         hours = 1 if itype == "xp_boost" else 24
         from datetime import timedelta
-        until = datetime.utcnow() + timedelta(hours=hours)
+        until = datetime.now(timezone.utc) + timedelta(hours=hours)
         await db.pool.execute("UPDATE economy SET xp_boost_until=$1 WHERE guild_id=$2 AND user_id=$3", until, gid, uid)
         await send(embed=discord.Embed(description=f"✅ **XP Boost** active for **{hours}h**!", color=C_SUCCESS))
     elif itype == "shield":

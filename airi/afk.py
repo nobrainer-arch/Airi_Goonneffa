@@ -1,13 +1,19 @@
 # airi/afk.py
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 import db
 from utils import C_WARN, C_INFO, _err
 
 async def _ensure_table():
     """afk table created in db._create_tables — this is just a helper import guard."""
     pass
+
+def _make_tz_aware(ts):
+    if ts is None: return None
+    from datetime import timezone as _tz
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None: return ts
+    return ts.replace(tzinfo=_tz.utc)
 
 async def get_afk(guild_id: int, user_id: int) -> dict | None:
     row = await db.pool.fetchrow(
@@ -74,7 +80,8 @@ class AFKCog(commands.Cog, name="AFK"):
             afk_info = await get_afk(gid, mentioned.id)
             if afk_info:
                 since = afk_info["set_at"]
-                delta = datetime.utcnow() - since if since else None
+                if since and (not hasattr(since,'tzinfo') or since.tzinfo is None): since = since.replace(tzinfo=__import__('datetime').timezone.utc)
+                delta = (datetime.now(__import__('datetime').timezone.utc) - since) if since else None
                 time_str = ""
                 if delta:
                     h, rem = divmod(int(delta.total_seconds()), 3600)

@@ -4,7 +4,7 @@
 # Bid/buyout/hammer happen via buttons — no text commands needed.
 import discord
 from discord.ext import commands
-from datetime import datetime
+from datetime import datetime, timezone
 import db
 from airi.guild_config import get_market_channel
 from airi.economy import add_coins, get_balance
@@ -30,7 +30,7 @@ def _market_embed(row, guild) -> discord.Embed:
         title=f"🔒 {wname} — Waifu Auction",
         description=f"Seller: **{sname}**\n\nStarting bid: **{row['min_bid']:,}** coins\n{bid_line}" + (f"\n{buy_line}" if buy_line else ""),
         color=ESCROW_COLOR,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
     if waifu_m:
         e.set_thumbnail(url=waifu_m.display_avatar.url)

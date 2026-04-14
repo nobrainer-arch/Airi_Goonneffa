@@ -1,6 +1,6 @@
 # airi/leaderboard.py
 import discord
-from datetime import datetime
+from datetime import datetime, timezone
 import db
 
 # Category definitions: (display name, query builder function)
@@ -129,7 +129,7 @@ async def _build_lb(guild: discord.Guild, category: str) -> discord.Embed:
     embed = discord.Embed(
         title=f"🏆 {title} Leaderboard — {guild.name}",
         color=0xf1c40f,
-        timestamp=datetime.utcnow()
+        timestamp=datetime.now(timezone.utc)
     )
     if not rows:
         embed.description = "No data available for this category."

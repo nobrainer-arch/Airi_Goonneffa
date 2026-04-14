@@ -93,7 +93,7 @@ async def log_txn(bot, guild_id: int, action: str,
         if not ch:
             return
 
-        from datetime import datetime
+        from datetime import datetime, timezone
         import discord as _d
 
         def _name(x):
@@ -106,7 +106,7 @@ async def log_txn(bot, guild_id: int, action: str,
         e = _d.Embed(
             title=f"💸 {action}",
             color=color,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.now(timezone.utc),
         )
         e.add_field(name="From",   value=_name(sender),              inline=True)
         e.add_field(name="To",     value=_name(receiver),            inline=True)

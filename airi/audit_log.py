@@ -13,13 +13,13 @@ LOG_KEEP_DAYS = 30
 # ── Write helpers ────────────────────────────────────────────────
 
 async def log(guild_id: int, user_id: int, action: str, detail: str = None,
-              amount: int = None, balance_before: int = None, balance_after: int = None):
+              amount: int = None, ):
     """Insert an audit row. Fire-and-forget — caller does not await errors."""
     try:
         await db.pool.execute("""
-            INSERT INTO audit_log (guild_id, user_id, action, detail, amount, balance_before, balance_after)
-            VALUES ($1,$2,$3,$4,$5,$6,$7)
-        """, guild_id, user_id, action, detail, amount, balance_before, balance_after)
+            INSERT INTO audit_log (guild_id, user_id, action, detail, amount)
+            VALUES ($1,$2,$3,$4,$5)
+        """, guild_id, user_id, action, detail, amount)
     except Exception as e:
         print(f"Audit log write failed: {e}")
 

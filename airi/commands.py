@@ -4,7 +4,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from datetime import datetime
+from datetime import datetime, timezone
 import random
 import db
 import config
@@ -58,7 +58,7 @@ async def _build_embed(bot, ctx_or_inter, action_text: str, gif_url: str,
     title = await db.pool.fetchval(
         "SELECT active_title FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
     )
-    e = discord.Embed(description=action_text, color=C_SOCIAL, timestamp=datetime.utcnow())
+    e = discord.Embed(description=action_text, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
     e.set_author(name=bot.user.display_name, icon_url=bot.user.display_avatar.url)
     tip = "  |  !rpblock @user to block" if cmd_name in NSFW_COMMANDS else ""
     e.set_footer(text=f"{'✨ '+title+'  ·  ' if title else ''}{author.display_name}{tip}")
@@ -113,7 +113,7 @@ class BackView(discord.ui.View):
             "SELECT active_title FROM economy WHERE guild_id=$1 AND user_id=$2",
             interaction.guild.id, interaction.user.id
         )
-        e = discord.Embed(description=action, color=C_SOCIAL, timestamp=datetime.utcnow())
+        e = discord.Embed(description=action, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
         e.set_author(name=self._bot.user.display_name, icon_url=self._bot.user.display_avatar.url)
         e.set_footer(text=f"{'✨ '+title+'  ·  ' if title else ''}{interaction.user.display_name}")
         e.set_image(url=gif_url)
@@ -159,40 +159,60 @@ class RecipientSelect(discord.ui.UserSelect):
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self._author:
             return await interaction.response.send_message("This isn't for you.", ephemeral=True)
-        from airi.gender import get_gender
-        ag = await get_gender(str(self._author)) or "u"
 
-        for item in self.view.children: item.disabled = True
-        await interaction.response.edit_message(view=self.view)
+        try:
+            from airi.gender import get_gender
+            ag = await get_gender(str(self._author)) or "u"
 
-        for member in self.values:
-            if self._is_nsfw:
-                if await db.pool.fetchval("SELECT 1 FROM nsfw_optout WHERE guild_id=$1 AND user_id=$2",
-                                          interaction.guild.id, member.id):
-                    await interaction.followup.send(f"**{member.display_name}** has NSFW opt-out.", ephemeral=True)
+            # Acknowledge the interaction early so followups work consistently.
+            await interaction.response.defer(ephemeral=True)
+
+            sent_any = False
+            for member in self.values:
+                if member.bot:
+                    await interaction.followup.send("❌ Bots can't be targeted.", ephemeral=True)
                     continue
-            elif await db.pool.fetchval(
-                "SELECT 1 FROM rpblock WHERE guild_id=$1 AND user_id=$2 AND blocked_id=$3",
-                interaction.guild.id, member.id, self._author
-            ):
-                await interaction.followup.send(f"**{member.display_name}** blocked you from RP.", ephemeral=True)
-                continue
+                if self._is_nsfw:
+                    if await db.pool.fetchval("SELECT 1 FROM nsfw_optout WHERE guild_id=$1 AND user_id=$2",
+                                              interaction.guild.id, member.id):
+                        await interaction.followup.send(f"**{member.display_name}** has NSFW opt-out.", ephemeral=True)
+                        continue
+                elif await db.pool.fetchval(
+                    "SELECT 1 FROM rpblock WHERE guild_id=$1 AND user_id=$2 AND blocked_id=$3",
+                    interaction.guild.id, member.id, self._author
+                ):
+                    await interaction.followup.send(f"**{member.display_name}** blocked you from RP.", ephemeral=True)
+                    continue
 
-            tg      = await get_gender(str(member.id)) or "u"
-            raw     = _get_action_text(self._cmd, ag, tg)
-            action  = raw.format(author=interaction.user.display_name, target=member.mention)
-            gif_url, _ = await get_gif(self._cmd, self._is_nsfw)
-            if not gif_url:
-                await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
-                return
-            e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user)
-            view = BackView(self._cmd, member.id, self._author, self._bot) if self._cmd in config.BACK_ACTIONS else None
-            await interaction.followup.send(embed=e, view=view)
+                tg      = await get_gender(str(member.id)) or "u"
+                raw     = _get_action_text(self._cmd, ag, tg)
+                action  = raw.format(author=interaction.user.display_name, target=member.mention)
+                gif_url, _ = await get_gif(self._cmd, self._is_nsfw)
+                if not gif_url:
+                    await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
+                    continue
 
-            # Counters
-            await _increment_action_counter(interaction, self._cmd, member)
+                e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user)
+                view = BackView(self._cmd, member.id, self._author, self._bot) if self._cmd in config.BACK_ACTIONS else None
+                if view:
+                    await interaction.followup.send(embed=e, view=view)
+                else:
+                    await interaction.followup.send(embed=e)
+                sent_any = True
 
-        self.view.stop()
+                await _increment_action_counter(interaction, self._cmd, member)
+
+            if not sent_any:
+                await interaction.followup.send("No valid targets could be processed.", ephemeral=True)
+        except Exception as err:
+            print(f"RecipientSelect callback error for {self._cmd}: {err}")
+            try:
+                await interaction.followup.send("❌ Something went wrong while selecting a target.", ephemeral=True)
+            except Exception:
+                pass
+        finally:
+            if self.view:
+                self.view.stop()
 
 
 class RecipientView(discord.ui.View):
@@ -425,7 +445,7 @@ class HookupRequestView(discord.ui.View):
         action  = raw.format(author=self._author.display_name, target=self._target.mention)
         gif_url, _ = await get_gif(self._cmd, is_nsfw)
         if not gif_url: return
-        e = discord.Embed(description=action, color=C_SOCIAL, timestamp=datetime.utcnow())
+        e = discord.Embed(description=action, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
         e.set_image(url=gif_url)
         e.set_footer(text=f"{self._author.display_name}  |  Consented")
         guild = self._author.guild

@@ -1,7 +1,7 @@
 # airi/business.py
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import random
 import db
 from utils import _err, C_BUSINESS, C_WARN, C_SUCCESS
@@ -34,7 +34,7 @@ async def _get_level(guild_id, user_id):
     return row["level"] if row else 0
 
 async def _biz_count(guild_id):
-    return await db.pool.fetchval("SELECT COUNT(*) FROM businesses WHERE guild_id=$1 AND status='running'", guild_id) or 0
+    return await db.pool.fetchval("SELECT COUNT(*) FROM businesses WHERE guild_id=$1 ", guild_id) or 0
 
 async def _max_biz(guild_id, guild):
     members = guild.member_count or 1
@@ -81,7 +81,7 @@ class BusinessCog(commands.Cog, name="Business"):
 
         # Check already has one
         existing = await db.pool.fetchrow(
-            "SELECT id FROM businesses WHERE guild_id=$1 AND owner_id=$2 AND status='running'", gid, uid
+            "SELECT id FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid
         )
         if existing:
             return await _err(ctx, "You already own a business. Use `!mybiz` to manage it.")
@@ -165,14 +165,14 @@ class BusinessCog(commands.Cog, name="Business"):
         """View your business stats."""
         if not await check_channel(ctx, "business"): return
         gid, uid = ctx.guild.id, ctx.author.id
-        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 AND status='running'", gid, uid)
+        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid)
         if not biz:
             return await ctx.send(embed=discord.Embed(
                 description="You don't own a business. Use `!startbiz` to open one!",
                 color=C_WARN
             ))
         info = BIZ_TYPES[biz["type"]]
-        now  = datetime.utcnow()
+        now  = datetime.now(timezone.utc)
         last = biz.get("last_collected")
         hours_since = (now - last).total_seconds() / 3600 if last else 0
         ready = hours_since >= 1.0
@@ -192,10 +192,10 @@ class BusinessCog(commands.Cog, name="Business"):
         """Collect your business income."""
         if not await check_channel(ctx, "business"): return
         gid, uid = ctx.guild.id, ctx.author.id
-        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 AND status='running'", gid, uid)
+        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid)
         if not biz: return await _err(ctx, "You don't own a business.")
 
-        now   = datetime.utcnow()
+        now   = datetime.now(timezone.utc)
         last  = biz["last_collected"]
         if last and (now - last) < COLLECT_INTERVAL:
             rem = COLLECT_INTERVAL - (now - last)
@@ -245,7 +245,7 @@ class BusinessCog(commands.Cog, name="Business"):
         """Upgrade your business for higher income."""
         if not await check_channel(ctx, "business"): return
         gid, uid = ctx.guild.id, ctx.author.id
-        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 AND status='running'", gid, uid)
+        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid)
         if not biz: return await _err(ctx, "You don't own a business.")
         info      = BIZ_TYPES[biz["type"]]
         cost      = info["cost"] * biz["level"]
@@ -288,7 +288,7 @@ class BusinessCog(commands.Cog, name="Business"):
         """Hire a manager. Shows picker if no @ given."""
         if not await check_channel(ctx, "business"): return
         gid, uid = ctx.guild.id, ctx.author.id
-        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 AND status='running'", gid, uid)
+        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid)
         if not biz: return await _err(ctx, "You don't own a business.")
 
         if member is None:
@@ -324,7 +324,7 @@ class BusinessCog(commands.Cog, name="Business"):
         """Sell your business for 60% of startup cost."""
         if not await check_channel(ctx, "business"): return
         gid, uid = ctx.guild.id, ctx.author.id
-        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 AND status='running'", gid, uid)
+        biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid)
         if not biz: return await _err(ctx, "You don't own a business.")
         info   = BIZ_TYPES[biz["type"]]
         refund = int(info["cost"] * 0.60)
@@ -364,7 +364,7 @@ class BusinessCog(commands.Cog, name="Business"):
         if not await check_channel(ctx, "business"): return
         gid  = ctx.guild.id
         rows = await db.pool.fetch(
-            "SELECT * FROM businesses WHERE guild_id=$1 AND status='running' ORDER BY level DESC",
+            "SELECT * FROM businesses WHERE guild_id=$1  ORDER BY level DESC",
             gid
         )
         if not rows:

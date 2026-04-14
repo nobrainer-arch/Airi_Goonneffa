@@ -1,17 +1,25 @@
 # airi/daily_panel.py — Economy Panel (Daily/Work/Crime in one place)
 import discord
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import db
 
 async def _get_state(gid: int, uid: int) -> dict:
-    now = datetime.utcnow()
+    from datetime import timezone as _tz
+    now = datetime.now(_tz.utc)
     eco  = await db.pool.fetchrow(
         "SELECT last_daily,streak,balance FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
     )
     work = await db.pool.fetchrow(
         "SELECT last_work,last_crime FROM work_log WHERE guild_id=$1 AND user_id=$2", gid, uid
     )
+    def _make_aware(ts):
+        """Ensure datetime is timezone-aware for safe arithmetic."""
+        if ts is None: return None
+        if hasattr(ts, 'tzinfo') and ts.tzinfo is not None:
+            return ts
+        return ts.replace(tzinfo=_tz.utc)
     def _rem(ts, hours):
+        ts = _make_aware(ts)
         if not ts: return None
         d = timedelta(hours=hours) - (now - ts)
         return d if d.total_seconds() > 0 else None
@@ -77,7 +85,10 @@ class DailyPanelView(discord.ui.View):
     async def _refresh(self, interaction: discord.Interaction):
         self._state = await _get_state(self._gid, self._uid)
         self._rebuild()
-        await interaction.edit_original_response(embed=self._embed(), view=self)
+        if interaction.response.is_done():
+            await interaction.edit_original_response(embed=self._embed(), view=self)
+        else:
+            await interaction.response.edit_message(embed=self._embed(), view=self)
 
     async def _run_cog_cmd(self, interaction: discord.Interaction, cog_name: str, method: str):
         cog = interaction.client.cogs.get(cog_name)

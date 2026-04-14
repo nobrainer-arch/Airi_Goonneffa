@@ -31,10 +31,11 @@ query ($page: Int, $perPage: Int) {
 """
 
 def _favourites_to_rarity(fav: int) -> str:
-    if fav >= 20000: return "mythic"
-    if fav >= 8000:  return "legendary"
-    if fav >= 3000:  return "epic"
-    if fav >= 1000:  return "rare"
+    # Raised thresholds so legendary/mythic are genuinely rare
+    if fav >= 50000: return "mythic"
+    if fav >= 20000: return "legendary"
+    if fav >= 8000:  return "epic"
+    if fav >= 2000:  return "rare"
     return "common"
 
 def _parse(c: dict, gender_filter: str) -> dict | None:
