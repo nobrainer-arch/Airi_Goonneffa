@@ -50,7 +50,7 @@ async def _rel_opted_out(guild_id, user_id):
 class ProposalView(discord.ui.View):
     def __init__(self, proposer_id: int, target_id: int, proposal_row_id: int,
                  ptype: str, dowry: int, prenup: bool):
-        super().__init__(timeout=None)  # Persistent view
+        super().__init__(timeout=None)
         self._proposer  = proposer_id
         self._target    = target_id
         self._row_id    = proposal_row_id
@@ -58,104 +58,109 @@ class ProposalView(discord.ui.View):
         self._dowry     = dowry
         self._prenup    = prenup
         self._done      = False
+        self._assign_custom_ids()
 
-        # Add buttons with unique custom_id
-        accept_btn = discord.ui.Button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id=f"proposal_accept_{self._row_id}")
-        accept_btn.callback = self.accept
-        self.add_item(accept_btn)
-
-        decline_btn = discord.ui.Button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id=f"proposal_decline_{self._row_id}")
-        decline_btn.callback = self.decline
-        self.add_item(decline_btn)
+    def _assign_custom_ids(self):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == "proposal_accept":
+                    child.custom_id = f"proposal_accept_{self._row_id}"
+                elif child.custom_id == "proposal_decline":
+                    child.custom_id = f"proposal_decline_{self._row_id}"
 
     async def _finish(self, interaction: discord.Interaction, accepted: bool):
-        if self._done:
-            await interaction.response.send_message("Already responded.", ephemeral=True)
-            return
-        if interaction.user.id != self._target:
-            await interaction.response.send_message("Not for you.", ephemeral=True)
-            return
+        try:
+            if self._done:
+                await interaction.response.send_message("Already responded.", ephemeral=True)
+                return
+            if interaction.user.id != self._target:
+                await interaction.response.send_message("Not for you.", ephemeral=True)
+                return
 
-        # Check if proposal still exists and is pending
-        row = await db.pool.fetchrow("SELECT expires_at, status FROM proposals WHERE id=$1", self._row_id)
-        if not row or row["status"] != "pending":
-            await interaction.response.send_message("This proposal is no longer active.", ephemeral=True)
-            return
-        if row["expires_at"] < datetime.utcnow():
-            await interaction.response.send_message("This proposal has expired.", ephemeral=True)
-            return
+            row = await db.pool.fetchrow("SELECT expires_at, status FROM proposals WHERE id=$1", self._row_id)
+            if not row or row["status"] != "pending":
+                await interaction.response.send_message("This proposal is no longer active.", ephemeral=True)
+                return
+            expires = row["expires_at"]
+            now = datetime.utcnow() if expires and expires.tzinfo is None else datetime.now(timezone.utc)
+            if expires and expires < now:
+                await interaction.response.send_message("This proposal has expired.", ephemeral=True)
+                return
 
-        self._done = True
-        self.stop()
+            self._done = True
+            self.stop()
 
-        gid = interaction.guild_id
-        uid = self._proposer
-        tid = self._target
+            gid = interaction.guild_id
+            uid = self._proposer
+            tid = self._target
 
-        await db.pool.execute(
-            "UPDATE proposals SET status=$1 WHERE id=$2",
-            "accepted" if accepted else "rejected", self._row_id
-        )
-
-        if accepted:
-            rel = await db.pool.fetchrow("""
-                INSERT INTO relationships (guild_id, user1_id, user2_id, type, dowry, prenup)
-                VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
-            """, gid, uid, tid, self._ptype, self._dowry, self._prenup)
-            if self._ptype == "married":
-                await db.pool.execute("""
-                    INSERT INTO shared_accounts (relationship_id, balance) VALUES ($1,0)
-                """, rel["id"])
-            label = "💍 **You are now married!**" if self._ptype == "married" else "💘 **You are now dating!**"
-            shared_note = "\n🏦 A shared account was created — use `!shared balance`." if self._ptype == "married" else ""
-            e = discord.Embed(
-                title="💕 Proposal Accepted!",
-                description=f"{interaction.user.mention} said **YES**!\n{label}{shared_note}",
-                color=C_SUCCESS,
-            )
-        else:
-            if self._dowry > 0:
-                await add_coins(gid, uid, self._dowry)
-            e = discord.Embed(
-                title="💔 Proposal Declined",
-                description=f"{interaction.user.mention} said **no**.",
-                color=C_ERROR,
+            await db.pool.execute(
+                "UPDATE proposals SET status=$1 WHERE id=$2",
+                "accepted" if accepted else "rejected", self._row_id
             )
 
-        # Disable buttons, edit original message
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(embed=e, view=self)
-
-        # Send DMs
-        proposer = interaction.guild.get_member(self._proposer)
-        target = interaction.user
-        if accepted:
-            if self._ptype == "married":
-                msg = f"💍 Congratulations! Your marriage proposal was accepted. You are now married to {target.mention}."
+            if accepted:
+                rel = await db.pool.fetchrow("""
+                    INSERT INTO relationships (guild_id, user1_id, user2_id, type, dowry, prenup)
+                    VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
+                """, gid, uid, tid, self._ptype, self._dowry, self._prenup)
+                if self._ptype == "married":
+                    await db.pool.execute(
+                        "INSERT INTO shared_accounts (relationship_id, balance) VALUES ($1,0)",
+                        rel["id"]
+                    )
+                label = "💍 **You are now married!**" if self._ptype == "married" else "💘 **You are now dating!**"
+                shared_note = "\n🏦 A shared account was created — use `!shared balance`." if self._ptype == "married" else ""
+                e = discord.Embed(
+                    title="💕 Proposal Accepted!",
+                    description=f"{interaction.user.mention} said **YES**!\n{label}{shared_note}",
+                    color=C_SUCCESS,
+                )
             else:
-                msg = f"💘 Your dating proposal was accepted. You are now dating {target.mention}."
-            for user in [proposer, target]:
-                if user:
+                if self._dowry > 0:
+                    await add_coins(gid, uid, self._dowry)
+                e = discord.Embed(
+                    title="💔 Proposal Declined",
+                    description=f"{interaction.user.mention} said **no**.",
+                    color=C_ERROR,
+                )
+
+            for item in self.children:
+                if isinstance(item, discord.ui.Button):
+                    item.disabled = True
+            await interaction.response.edit_message(embed=e, view=self)
+
+            proposer = interaction.guild.get_member(self._proposer)
+            target = interaction.user
+            if accepted:
+                if self._ptype == "married":
+                    msg = f"💍 Congratulations! Your marriage proposal was accepted. You are now married to {target.mention}."
+                else:
+                    msg = f"💘 Your dating proposal was accepted. You are now dating {target.mention}."
+                for user in [proposer, target]:
+                    if user:
+                        try:
+                            await user.send(msg)
+                        except discord.Forbidden:
+                            pass
+            else:
+                if self._dowry > 0 and proposer:
                     try:
-                        await user.send(msg)
+                        await proposer.send(f"💔 Your marriage proposal was declined. **{self._dowry:,} coins** have been refunded to your account.")
                     except discord.Forbidden:
                         pass
-        else:
-            if self._dowry > 0 and proposer:
-                try:
-                    await proposer.send(f"💔 Your marriage proposal was declined. **{self._dowry:,} coins** have been refunded to your account.")
-                except discord.Forbidden:
-                    pass
+        except Exception as exc:
+            print(f"ProposalView error: {exc}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message("❌ An error occurred while processing the proposal.", ephemeral=True)
 
-    async def accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="✅ Accept", style=discord.ButtonStyle.success, custom_id="proposal_accept")
+    async def accept_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction, True)
 
-    async def decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="❌ Decline", style=discord.ButtonStyle.danger, custom_id="proposal_decline")
+    async def decline_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._finish(interaction, False)
-
-    async def on_timeout(self):
-        self._done = True
 
 
 class _CheatingResolutionView(discord.ui.View):

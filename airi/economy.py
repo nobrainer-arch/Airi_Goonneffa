@@ -1,20 +1,20 @@
 # airi/economy.py — Economy commands with full UI
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, timezone
 import random
 import db
 import config
 from utils import _err, C_ECONOMY, C_INFO, C_SUCCESS, log_txn
 
 # ── Constants ─────────────────────────────────────────────────────
-DAILY_MIN     = 500
-DAILY_MAX     = 1500
-STREAK_BONUS  = 50
-STREAK_CAP    = 1000
+DAILY_MIN     = 3500
+DAILY_MAX     = 8000
+STREAK_BONUS  = 300
+STREAK_CAP    = 5000
 DAILY_COOLDOWN = 22   # hours
-PAY_TAX        = 0.05
-GIVE_LIMIT     = 1000
+PAY_TAX        = 0.02
+GIVE_LIMIT     = 5000
 
 SHOP_ITEMS: dict[str, dict] = {
     "xpboost":   {"name": "⚡ XP Boost (1h)",   "price": 1000,  "desc": "Double XP for 1 hour",         "type": "xp_boost"},
@@ -150,7 +150,7 @@ class EconomyCog(commands.Cog, name="Economy"):
 
     async def _do_daily(self, ctx):
         from datetime import timezone as _tz
-        gid, uid, now = ctx.guild.id, ctx.author.id, datetime.utcnow()
+        gid, uid, now = ctx.guild.id, ctx.author.id, datetime.now(timezone.utc)
         async with db.pool.acquire() as conn:
             await ensure_user(conn, gid, uid)
         row = await db.pool.fetchrow(

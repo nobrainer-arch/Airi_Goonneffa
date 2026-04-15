@@ -6,7 +6,7 @@ import db
 from utils import _err, C_SOCIAL, C_ECONOMY, C_SUCCESS, C_WARN
 from airi.guild_config import check_channel, get_channel, K_PROFILE
 
-CLAIM_COST  = 500
+CLAIM_COST  = 2500
 
 def _make_tz_aware(ts):
     if ts is None: return None

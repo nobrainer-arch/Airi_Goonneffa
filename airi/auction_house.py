@@ -3,7 +3,7 @@
 # Bids/confirmations are ephemeral. Only completed sales post to txn channel.
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, timezone
 import asyncio
 import db
 from utils import _err, C_GACHA, C_ECONOMY, C_WARN, C_SUCCESS, C_ERROR
@@ -31,7 +31,7 @@ def _listing_embed(row, guild) -> discord.Embed:
     sname  = seller.display_name if seller else f"ID {row['seller_id']}"
     expires_txt = ""
     if row["expires_at"]:
-        h = max(0, int((row["expires_at"] - datetime.utcnow()).total_seconds() // 3600))
+        h = max(0, int((row["expires_at"] - datetime.now(timezone.utc)).total_seconds() // 3600))
         expires_txt = f"\n⏰ Expires in **{h}h**"
 
     has_bid = row.get("min_bid") is not None
@@ -389,7 +389,7 @@ async def _do_sell(interaction: discord.Interaction, gid: int, uid: int, item_ke
     try:
         from airi.guild_config import get_market_channel
         from airi.inventory import get_quantity, remove_item, ITEMS
-        from datetime import datetime, timedelta
+        from datetime import datetime, timedelta, timezone
 
         market_ch_id = await get_market_channel(gid)
         target_ch = interaction.client.get_channel(market_ch_id) if market_ch_id else interaction.channel
@@ -405,7 +405,7 @@ async def _do_sell(interaction: discord.Interaction, gid: int, uid: int, item_ke
         if not ok:
             return await interaction.response.send_message("❌ Failed to remove item.", ephemeral=True)
 
-        expires = datetime.utcnow() + timedelta(hours=AH_EXPIRE_H)
+        expires = datetime.now(timezone.utc) + timedelta(hours=AH_EXPIRE_H)
         item_info = ITEMS[item_key]
         row = await db.pool.fetchrow("""
             INSERT INTO auction_house

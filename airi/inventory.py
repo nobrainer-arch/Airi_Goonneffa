@@ -81,18 +81,18 @@ async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_k
     key = item_key
 
     if key == "xp_boost_1h":
-        until = datetime.utcnow() + timedelta(hours=1)
+        until = datetime.now(timezone.utc) + timedelta(hours=1)
         await db.pool.execute("UPDATE economy SET xp_boost_until=$1 WHERE guild_id=$2 AND user_id=$3", until, gid, uid)
         msg = "⚡ XP Boost active for **1 hour**!"
     elif key == "xp_boost_24h":
-        until = datetime.utcnow() + timedelta(hours=24)
+        until = datetime.now(timezone.utc) + timedelta(hours=24)
         await db.pool.execute("UPDATE economy SET xp_boost_until=$1 WHERE guild_id=$2 AND user_id=$3", until, gid, uid)
         msg = "🌟 XP Boost active for **24 hours**!"
     elif key == "daily_x2":
         await db.pool.execute("UPDATE economy SET daily_boost=TRUE WHERE guild_id=$1 AND user_id=$2", gid, uid)
         msg = "💰 Next `!daily` will be **doubled**!"
     elif key == "shield_7d":
-        until = datetime.utcnow() + timedelta(days=7)
+        until = datetime.now(timezone.utc) + timedelta(days=7)
         await db.pool.execute("""
             INSERT INTO protection (guild_id,user_id,expires_at) VALUES ($1,$2,$3)
             ON CONFLICT (guild_id,user_id) DO UPDATE SET expires_at=$3

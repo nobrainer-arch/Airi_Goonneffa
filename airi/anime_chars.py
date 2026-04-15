@@ -10,8 +10,8 @@ from airi.guild_config import check_channel
 from airi.economy import get_balance
 from airi.constants import RARITY_STYLE, CARD_FLAVOUR, PERSONALITY_TAGS, KAKERA_EMOJI
 
-SINGLE_COST = 300
-MULTI_COST  = 2500
+SINGLE_COST = 500
+MULTI_COST  = 4500
 PITY_AT     = 60  # increased from 40 — legendary less frequent
 
 # Cache pools per guild+gender (in‑memory)
@@ -178,36 +178,68 @@ class WaifuBoardView(discord.ui.View):
 
         results = []
         char_pool = list(self._all_chars)
+        # Track source_ids used this session — prevents same char appearing twice in ×10 pull
+        used_ids: set = set()
 
-        for _ in range(count):
-            # 20% chance to pull a featured (banner) character
-            featured_pool = [c for c in char_pool if c.get("id") in self._featured]
-            if featured_pool and random.random() < 0.10:  # FIX: reduced from 20%
-                char = random.choice(featured_pool)
+        for pull_i in range(count):
+            char = None
+            rarity = None
+
+            # ── Step 1: try featured banner (10% chance) ──────────────────
+            featured_avail = [
+                c for c in char_pool
+                if c.get("id") in self._featured and c.get("id") not in used_ids
+            ]
+            if featured_avail and random.random() < 0.10:
+                char   = random.choice(featured_avail)
                 rarity = char["rarity"]
             else:
-                rarity = _roll_rarity(pity)
-                pool_f = [c for c in char_pool if c["rarity"] == rarity]
-                char = random.choice(pool_f if pool_f else char_pool)
+                # ── Step 2: roll rarity then find a matching char ──────────
+                # Retry up to 5 different rarities if the rolled one has no
+                # remaining chars in the pool (avoids fallback contamination)
+                for _attempt in range(6):
+                    rarity = _roll_rarity(pity)
+                    pool_f = [
+                        c for c in char_pool
+                        if c["rarity"] == rarity and c.get("id") not in used_ids
+                    ]
+                    if pool_f:
+                        char = random.choice(pool_f)
+                        break
+                else:
+                    # All chars of all rarities exhausted in this session
+                    # Give a small kakera consolation
+                    results.append({"dup": True, "kakera": 3, "rarity": "common", "name": "Pool Empty"})
+                    continue
 
-            # One-user-only for legendary/mythic
-            if rarity in ("legendary","mythic") and char.get("id"):
+            # ── Step 3: one-user-only gate for legendary/mythic ────────────
+            if rarity in ("legendary", "mythic") and char.get("id"):
                 existing = await db.pool.fetchrow(
                     "SELECT owner_id FROM anime_waifus WHERE guild_id=$1 AND source_id=$2 AND rarity=$3",
                     gid, char["id"], rarity
                 )
                 if existing:
                     if existing["owner_id"] == uid:
-                        kak = 10 if rarity == "legendary" else 50
+                        # Already own this card — give kakera duplicate reward
+                        kak = 15 if rarity == "legendary" else 60
                         await add_kakera(gid, uid, kak)
                         results.append({"dup": True, "kakera": kak, "rarity": rarity, "name": char.get("name","?")})
                         pity = 0
+                        if char.get("id"): used_ids.add(char["id"])
                         continue
                     else:
-                        rarity = "epic"  # Demote if owned by someone else
+                        # Owned by someone else → demote to epic, pick an epic char
+                        rarity = "epic"
+                        epic_pool = [
+                            c for c in char_pool
+                            if c["rarity"] == "epic" and c.get("id") not in used_ids
+                        ]
+                        if epic_pool:
+                            char = random.choice(epic_pool)
 
+            # ── Step 4: Save to DB ─────────────────────────────────────────
             personality = random.choice(PERSONALITY_TAGS)
-            pity = 0 if rarity in ("legendary","mythic") else pity + 1
+            pity = 0 if rarity in ("legendary", "mythic") else pity + 1
 
             db_row = await db.pool.fetchrow("""
                 INSERT INTO anime_waifus
@@ -215,13 +247,19 @@ class WaifuBoardView(discord.ui.View):
                      source_id, series, gender, favourites, personality_tag)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id
             """, gid, uid,
-                char.get("name","Unknown"), char.get("image",""), rarity,
-                char.get("id"), char.get("series","Unknown"),
-                self._gender, char.get("favourites",0), personality
+                char.get("name", "Unknown"), char.get("image", ""), rarity,
+                char.get("id"), char.get("series", "Unknown"),
+                self._gender,   # ← always from the board's gender, not char dict
+                char.get("favourites", 0), personality
             )
             char_copy = dict(char)
-            char_copy.update({"rarity": rarity, "personality_tag": personality, "card_wrap": "default"})
+            char_copy.update({"rarity": rarity, "personality_tag": personality,
+                               "card_wrap": "default", "gender": self._gender})
             results.append({"id": db_row["id"], "char": char_copy, "dup": False})
+
+            # Mark as used so it won't appear again this pull session
+            if char.get("id"):
+                used_ids.add(char["id"])
             if char in char_pool and len(char_pool) > 1:
                 char_pool.remove(char)
 
@@ -516,7 +554,7 @@ class CardNavView(discord.ui.View):
         type_lbl = "🌸 Waifu" if gender == "female" else "⚔️ Husbando"
         boosted = c.get("boosted_until")
         boost_txt = ""
-        if boosted and boosted > datetime.now(timezone.utc):
+        if boosted and datetime.now(timezone.utc) < (boosted if boosted.tzinfo else boosted.replace(tzinfo=timezone.utc)):
             boost_txt = f"\n⚡ **Boosted** until {discord.utils.format_dt(boosted, 'R')}"
 
         e = discord.Embed(
@@ -628,29 +666,36 @@ class CardNavView(discord.ui.View):
     async def give_btn(self, interaction: discord.Interaction, btn):
         if interaction.user.id != self._owner_id:
             return await interaction.response.send_message("Not your cards.", ephemeral=True)
-        c = self._cards[self._page]
+        nav_ref = self
+        card = self._cards[self._page]
         sel = discord.ui.UserSelect(placeholder="Give this card to…")
         async def sel_cb(i2: discord.Interaction):
+            await i2.response.defer(ephemeral=True)
             rec = sel.values[0]
-            if rec.id == self._owner_id or rec.bot:
-                return await i2.response.send_message("❌ Invalid target.", ephemeral=True)
-            await db.pool.execute(
-                "UPDATE anime_waifus SET owner_id=$1 WHERE id=$2 AND owner_id=$3",
-                rec.id, c["id"], self._owner_id,
+            if rec.id == nav_ref._owner_id or rec.bot:
+                return await i2.followup.send("❌ Invalid target.", ephemeral=True)
+            updated = await db.pool.fetchrow(
+                "UPDATE anime_waifus SET owner_id=$1 WHERE id=$2 AND owner_id=$3 RETURNING id",
+                rec.id, card["id"], nav_ref._owner_id,
             )
-            del self._cards[self._page]
-            self._page = max(0, self._page - 1)
-            for item in gv.children: item.disabled = True
-            await i2.response.edit_message(
-                content=f"✅ **{c.get('char_name')}** given to {rec.mention}!", view=gv
+            if not updated:
+                return await i2.followup.send("❌ Card no longer yours.", ephemeral=True)
+            # Remove from local list
+            try:
+                del nav_ref._cards[nav_ref._page]
+                nav_ref._page = max(0, nav_ref._page - 1)
+            except Exception:
+                pass
+            # Disable the give picker
+            for item in gv_view.children: item.disabled = True
+            await i2.followup.send(
+                content=f"✅ **{card.get('char_name')}** given to {rec.mention}!",
+                ephemeral=True,
             )
-            if self._cards:
-                self._update_btns()
-                await i2.followup.send(embed=self.build_embed(), view=self, ephemeral=True)
         sel.callback = sel_cb
-        class gv(discord.ui.View):
-            def __init__(gv_self): super().__init__(timeout=60); gv_self.add_item(sel)
-        await interaction.response.send_message("Give card to:", view=gv(), ephemeral=True)
+        class gv_view(discord.ui.View):
+            def __init__(s): super().__init__(timeout=60); s.add_item(sel)
+        await interaction.response.send_message("Give card to:", view=gv_view(), ephemeral=True)
 
     @discord.ui.button(label="🔍 Filter", style=discord.ButtonStyle.secondary, row=2)
     async def filter_btn(self, interaction: discord.Interaction, btn):

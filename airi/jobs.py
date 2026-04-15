@@ -16,18 +16,20 @@ PAY_DAILY_LIMIT = 10000
 PAY_TAX         = 0.05
 
 JOBS = [
-    ("💼 Salesperson",     (200, 400), 0,  None),
-    ("👨‍🍳 Line Cook",        (250, 450), 5,  None),
-    ("🎨 Graphic Designer", (300, 500), 10, None),
-    ("💻 Freelance Dev",    (400, 700), 20, None),
-    ("🎤 Streamer",         (500, 900), 30, None),
+    ("💼 Salesperson",      (800,  2000),  0, None),
+    ("👨‍🍳 Line Cook",         (1200, 2800),  5, None),
+    ("🎨 Graphic Designer",  (1800, 3500), 10, None),
+    ("💻 Freelance Dev",     (2500, 5000), 20, None),
+    ("🎤 Content Creator",   (3500, 7000), 30, None),
+    ("🏢 CEO",               (6000,12000), 50, None),
 ]
 
 CRIMES = [
-    ("🎰 Card Counting",   (400,  900), (100, 300), 0.60),
-    ("🏃 Shoplifting",     (200,  500), (150, 250), 0.65),
-    ("💻 Wire Fraud",      (600, 1500), (300, 500), 0.55),
-    ("🎭 Scam Call",       (300,  700), (200, 350), 0.60),
+    ("🏃 Shoplifting",      (600,  2000), (300,  700), 0.65),
+    ("🎰 Card Counting",    (1200, 3500), (500, 1200), 0.58),
+    ("🎭 Scam Call",        (900,  2500), (400,  900), 0.60),
+    ("💻 Wire Fraud",       (2000, 6000), (800, 2000), 0.52),
+    ("🏦 Bank Heist",       (6000,15000),(2500,5000), 0.38),
 ]
 
 
