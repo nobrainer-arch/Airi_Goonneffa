@@ -91,8 +91,10 @@ class DailyPanelView(discord.ui.View):
             await interaction.response.edit_message(embed=self._embed(), view=self)
 
     async def _run_cog_cmd(self, interaction: discord.Interaction, cog_name: str, method: str):
+        """Run a cog method via a fake ctx. Returns True on success, False on handled error."""
         cog = interaction.client.cogs.get(cog_name)
-        if not cog: return
+        if not cog: return False
+        sent_messages = []
         class FCtx:
             guild   = interaction.guild
             author  = interaction.user
@@ -100,12 +102,33 @@ class DailyPanelView(discord.ui.View):
             bot     = interaction.client
             async def send(self_, *a, **kw):
                 kw.pop("delete_after", None)
-                return await interaction.followup.send(*a, **kw)
+                # Store result in panel state instead of sending separate message
+                if "embed" in kw:
+                    sent_messages.append(kw["embed"])
+                elif a:
+                    sent_messages.append(a[0])
+                # Send as ephemeral followup so it's visible but doesn't clutter channel
+                try:
+                    return await interaction.followup.send(*a, ephemeral=True, **{k:v for k,v in kw.items()})
+                except Exception:
+                    pass
             class message:
                 @staticmethod
                 async def delete(): pass
         fn = getattr(cog, method, None)
-        if fn: await fn(FCtx())
+        if fn:
+            try:
+                await fn(FCtx())
+                return True
+            except Exception as e:
+                print(f"DailyPanel _run_cog_cmd error: {e}")
+                import traceback; traceback.print_exc()
+                try:
+                    await interaction.followup.send(f"❌ An error occurred: {str(e)[:100]}", ephemeral=True)
+                except Exception:
+                    pass
+                return False
+        return False
 
     async def _daily(self, interaction: discord.Interaction):
         if interaction.user.id != self._uid: return await interaction.response.send_message("Not for you.", ephemeral=True)

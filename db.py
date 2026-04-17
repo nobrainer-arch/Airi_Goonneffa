@@ -336,6 +336,46 @@ async def init():
                 gender  TEXT   NOT NULL DEFAULT 'u'
             );
 
+
+            CREATE TABLE IF NOT EXISTS rpg_characters (
+                guild_id     BIGINT  NOT NULL,
+                user_id      BIGINT  NOT NULL,
+                class        TEXT    NOT NULL DEFAULT 'Warrior',
+                realm_level  INTEGER NOT NULL DEFAULT 1,
+                strength     INTEGER NOT NULL DEFAULT 10,
+                defence      INTEGER NOT NULL DEFAULT 5,
+                agility      INTEGER NOT NULL DEFAULT 5,
+                spirit       INTEGER NOT NULL DEFAULT 5,
+                hp_max       INTEGER NOT NULL DEFAULT 100,
+                hp_current   INTEGER NOT NULL DEFAULT 100,
+                mana_max     INTEGER NOT NULL DEFAULT 50,
+                mana_current INTEGER NOT NULL DEFAULT 50,
+                stat_points  INTEGER NOT NULL DEFAULT 0,
+                talent       TEXT,
+                PRIMARY KEY (guild_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS rpg_skills (
+                id          SERIAL PRIMARY KEY,
+                guild_id    BIGINT NOT NULL,
+                user_id     BIGINT NOT NULL,
+                skill_name  TEXT   NOT NULL,
+                skill_rank  TEXT   NOT NULL DEFAULT 'F',
+                mana_cost   INTEGER NOT NULL DEFAULT 10,
+                UNIQUE (guild_id, user_id, skill_name)
+            );
+
+            CREATE TABLE IF NOT EXISTS rpg_equipment (
+                guild_id     BIGINT NOT NULL,
+                user_id      BIGINT NOT NULL,
+                slot         TEXT   NOT NULL,
+                item_name    TEXT   NOT NULL,
+                item_rank    TEXT   NOT NULL DEFAULT 'F',
+                effect_desc  TEXT   DEFAULT '',
+                effect_key   TEXT,
+                effect_value FLOAT  DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id, slot)
+            );
             CREATE TABLE IF NOT EXISTS online_streaks (
                 guild_id             BIGINT NOT NULL,
                 user_id              BIGINT NOT NULL,

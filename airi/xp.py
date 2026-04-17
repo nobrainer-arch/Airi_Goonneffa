@@ -74,6 +74,14 @@ class XPCog(commands.Cog, name="XP"):
             await db.pool.execute("UPDATE xp SET level=$1 WHERE guild_id=$2 AND user_id=$3", new_level, gid, uid)
             reward = coin_reward_for_level(new_level)
             await add_coins(gid, uid, reward)
+            # Grant 2 RPG stat points per level-up
+            try:
+                await db.pool.execute(
+                    "UPDATE rpg_characters SET stat_points=stat_points+2 WHERE guild_id=$1 AND user_id=$2",
+                    gid, uid
+                )
+            except Exception:
+                pass
             # Level milestones
             from airi.milestones import check_milestone, update_achievement
             await check_milestone(self.bot, gid, uid, 'level', new_level, message.channel)
