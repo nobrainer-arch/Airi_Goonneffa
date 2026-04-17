@@ -253,8 +253,16 @@ class ProposeUserSelect(discord.ui.UserSelect):
         if member.bot or member == self.ctx.author:
             return await interaction.response.send_message("Invalid target.", ephemeral=True)
         if self.ptype == "dating":
-            await interaction.response.defer()
-            await self.cog._send_proposal(self.ctx, member, "dating", 0)
+            try:
+                await interaction.response.defer_update()
+            except AttributeError:
+                await interaction.response.defer()
+            try:
+                await self.cog._send_proposal(self.ctx, member, "dating", 0)
+                await interaction.followup.send("✅ Dating proposal sent!", ephemeral=True)
+            except Exception:
+                await interaction.followup.send("❌ Failed to send the proposal. Please try again.", ephemeral=True)
+                raise
         elif self.ptype == "marriage":
             modal = ProposeDowryModal(member, self.cog, self.ctx)
             await interaction.response.send_modal(modal)
@@ -282,7 +290,12 @@ class ProposeDowryModal(discord.ui.Modal, title="Marriage Proposal Dowry"):
             if bal < dowry:
                 return await interaction.response.send_message(f"You don't have **{dowry:,} coins** for the dowry.", ephemeral=True)
         await interaction.response.defer()
-        await self.cog._send_proposal(self.ctx, self.member, "marriage", dowry)
+        try:
+            await self.cog._send_proposal(self.ctx, self.member, "marriage", dowry)
+            await interaction.followup.send("✅ Marriage proposal sent!", ephemeral=True)
+        except Exception:
+            await interaction.followup.send("❌ Failed to send the proposal. Please try again.", ephemeral=True)
+            raise
 
 
 class ProposeTypeView(discord.ui.View):
@@ -367,10 +380,29 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         dowry_tx = f"\n\n💰 **Dowry offered:** {dowry:,} coins" if dowry > 0 else ""
         prenup_tx = "\n📜 **Prenup attached** — assets protected on divorce." if prenup and ptype == "marriage" else ""
 
-        row = await db.pool.fetchrow("""
-            INSERT INTO proposals (guild_id, proposer_id, target_id, type, dowry, expires_at)
-            VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
-        """, gid, uid, tid, ptype_db, dowry, expires)
+        row = None
+        try:
+            row = await db.pool.fetchrow("""
+                INSERT INTO proposals (guild_id, proposer_id, target_id, prop_type, dowry, prenup, expires_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id
+            """, gid, uid, tid, ptype_db, dowry, prenup, expires)
+        except Exception as exc:
+            err = str(exc).lower()
+            if "prop_type" in err and "does not exist" in err:
+                row = await db.pool.fetchrow("""
+                    INSERT INTO proposals (guild_id, proposer_id, target_id, type, dowry, prenup, expires_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id
+                """, gid, uid, tid, ptype_db, dowry, prenup, expires)
+            elif "expires_at" in err and "does not exist" in err:
+                row = await db.pool.fetchrow("""
+                    INSERT INTO proposals (guild_id, proposer_id, target_id, prop_type, dowry, prenup)
+                    VALUES ($1,$2,$3,$4,$5,$6) RETURNING id
+                """, gid, uid, tid, ptype_db, dowry, prenup)
+            else:
+                raise
+
+        if row is None:
+            raise RuntimeError("Failed to create proposal record")
 
         view = ProposalView(uid, tid, row["id"], ptype_db, dowry, prenup)
         e = discord.Embed(
@@ -384,7 +416,10 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         )
         e.set_thumbnail(url=member.display_avatar.url)
         msg = await ctx.send(embed=e, view=view)
-        ctx.bot.add_view(view, message_id=msg.id)
+        try:
+            ctx.bot.add_view(view, message_id=msg.id)
+        except Exception:
+            pass
 
     # ── View relationship ────────────────────────────────────────
     @commands.hybrid_command(name="myrel", aliases=["relationship", "partner"], description="View your relationship status")

@@ -11,6 +11,7 @@ ITEMS: dict[str, dict] = {
     "xp_boost_24h":   {"name": "🌟 XP Boost (24h)",      "rarity": "legendary", "tradable": True},
     "daily_x2":       {"name": "💰 Daily x2",             "rarity": "epic",      "tradable": True},
     "shield_7d":      {"name": "🛡️ Claim Shield (7d)",    "rarity": "epic",      "tradable": True},
+    "shield":         {"name": "🛡️ Claim Shield (7d)",    "rarity": "epic",      "tradable": True},  # alias
     "prenup":         {"name": "📜 Prenup Doc",            "rarity": "legendary", "tradable": True},
     "waifu_ticket":   {"name": "🎟️ Waifu Ticket",         "rarity": "legendary", "tradable": True},
     "waifu_ticket_3": {"name": "🎟️ Waifu Ticket ×3",     "rarity": "mythic",    "tradable": True},
@@ -91,7 +92,7 @@ async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_k
     elif key == "daily_x2":
         await db.pool.execute("UPDATE economy SET daily_boost=TRUE WHERE guild_id=$1 AND user_id=$2", gid, uid)
         msg = "💰 Next `!daily` will be **doubled**!"
-    elif key == "shield_7d":
+    elif key in ("shield_7d", "shield"):
         until = datetime.now(timezone.utc) + timedelta(days=7)
         await db.pool.execute("""
             INSERT INTO protection (guild_id,user_id,expires_at) VALUES ($1,$2,$3)
@@ -303,6 +304,9 @@ class InventoryCog(commands.Cog, name="Inventory"):
         if not await check_channel(ctx, "economy"):
             return
         item_key = item_key.lower().strip()
+        # Map aliases
+        key_map = {"shield": "shield_7d", "claim_shield": "shield_7d"}
+        item_key = key_map.get(item_key, item_key)
         if item_key not in ITEMS:
             return await _err(ctx, f"Unknown item `{item_key}`. Check `!inventory`.")
 

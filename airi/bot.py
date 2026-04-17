@@ -176,7 +176,7 @@ async def setup_hook():
         BusinessCog, InventoryCog, AuctionHouseCog, AuditLogCog,
         AvatarCog, OrdersCog, AFKCog, GenderCog, KakeraCog,
         MilestonesCog, AnimeCharsCog, EventsCog, LeaderboardCog,
-        IgnoreCog, BannersCog,
+        IgnoreCog, BannersCog,RPGStatsCog,
     ]:
         await bot.add_cog(cog_cls(bot))
 

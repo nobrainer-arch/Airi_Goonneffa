@@ -1,8 +1,9 @@
 # airi/economy.py — Economy commands with full UI
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta, timezone, timezone
+from datetime import datetime, timedelta, timezone
 import random
+import re
 import db
 import config
 from utils import _err, C_ECONOMY, C_INFO, C_SUCCESS, log_txn
@@ -19,7 +20,8 @@ GIVE_LIMIT     = 5000
 SHOP_ITEMS: dict[str, dict] = {
     "xpboost":   {"name": "⚡ XP Boost (1h)",   "price": 1000,  "desc": "Double XP for 1 hour",         "type": "xp_boost"},
     "xpboost24": {"name": "⚡ XP Boost (24h)",  "price": 8000,  "desc": "Double XP for 24 hours",        "type": "xp_boost24"},
-    "shield":    {"name": "🛡️ Waifu Shield",    "price": 2000,  "desc": "Protect your waifu from claims","type": "shield"},
+    "shield":    {"name": "🛡️ Claim Shield",   "price": 2000,  "desc": "Protects you from being claimed.",  "type": "shield"},
+    "claim_shield":{"name": "🛡️ Claim Shield", "price": 2000,  "desc": "Protects you from being claimed for 7 days", "type": "shield"},  # alias
     "prenup":    {"name": "📜 Prenup",           "price": 5000,  "desc": "Protects assets on divorce",    "type": "prenup"},
     "title_rich":{"name": "💰 Title: Rich",      "price": 3000,  "desc": "Show off wealth",               "type": "title"},
     "title_chad":{"name": "🔥 Title: Chad",      "price": 3000,  "desc": "Peak confidence",               "type": "title"},
@@ -28,10 +30,18 @@ SHOP_ITEMS: dict[str, dict] = {
 }
 
 def _make_tz_aware(ts):
-    """Coerce datetime to naive UTC for safe arithmetic with asyncpg results."""
-    if ts is None: return None
+    """Coerce datetime to UTC-aware datetime for safe arithmetic with asyncpg results."""
+    if ts is None:
+        return None
     if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
-        return ts.replace(tzinfo=None)  # make naive
+        return ts.astimezone(timezone.utc)
+    return ts.replace(tzinfo=timezone.utc)
+
+def _utc_naive(ts):
+    if ts is None:
+        return None
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+        return ts.astimezone(timezone.utc).replace(tzinfo=None)
     return ts
 
 async def ensure_user(conn, gid: int, uid: int):
@@ -68,75 +78,164 @@ def _bal_embed(member: discord.Member, bal: int, kak: int, title: str | None) ->
     return e
 
 
+def _normalize_name(text: str) -> str:
+    return re.sub(r'[^a-z0-9]+', '_', text.lower()).strip('_')
+
+
+def _resolve_shop_key(item: str) -> str | None:
+    normalized = _normalize_name(item)
+    if normalized in SHOP_ITEMS:
+        return normalized
+    for key, value in SHOP_ITEMS.items():
+        if normalized == _normalize_name(value["name"]):
+            return key
+    return None
+
+
+class GiveModal(discord.ui.Modal, title="Give Coins"):
+    amount = discord.ui.TextInput(label="Amount (1-1000)", placeholder="e.g. 100", required=True)
+
+    def __init__(self, target: discord.Member, ctx):
+        super().__init__()
+        self.target = target
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        raw = self.amount.value.strip().replace(",", "")
+        if not raw.isdigit():
+            return await interaction.followup.send("❌ Invalid amount.", ephemeral=True)
+        amount = int(raw)
+        if amount <= 0 or amount > 1000:
+            return await interaction.followup.send("❌ Amount must be between 1 and 1,000 coins.", ephemeral=True)
+
+        gid = self.ctx.guild.id
+        uid = self.ctx.author.id
+        tid = self.target.id
+
+        async with db.pool.acquire() as conn:
+            sender_bal = await conn.fetchval(
+                "SELECT balance FROM economy WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
+                gid, uid
+            )
+            if sender_bal is None or sender_bal < amount:
+                return await interaction.followup.send(f"❌ You don't have **{amount:,}** coins.", ephemeral=True)
+
+            await conn.execute(
+                "UPDATE economy SET balance = balance - $1 WHERE guild_id=$2 AND user_id=$3",
+                amount, gid, uid
+            )
+            await conn.execute(
+                "INSERT INTO economy (guild_id, user_id, balance) VALUES ($1,$2,$3) "
+                "ON CONFLICT (guild_id, user_id) DO UPDATE SET balance = economy.balance + $3",
+                gid, tid, amount
+            )
+
+        await log_txn(self.ctx.bot, gid, "Give", self.ctx.author, self.target, amount)
+
+        await interaction.followup.send(
+            f"🎁 You gave **{amount:,} coins** to {self.target.mention}!",
+            ephemeral=True
+        )
+
+
+class PayModal(discord.ui.Modal, title="Pay Coins"):
+    amount = discord.ui.TextInput(label="Amount (1-10000)", placeholder="e.g. 500", required=True)
+
+    def __init__(self, target: discord.Member, ctx):
+        super().__init__()
+        self.target = target
+        self.ctx = ctx
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        raw = self.amount.value.strip().replace(",", "")
+        if not raw.isdigit():
+            return await interaction.followup.send("❌ Invalid amount.", ephemeral=True)
+        amount = int(raw)
+        if amount <= 0 or amount > 10000:
+            return await interaction.followup.send("❌ Amount must be 1–10,000 coins.", ephemeral=True)
+
+        gid = self.ctx.guild.id
+        uid = self.ctx.author.id
+        tid = self.target.id
+        tax = int(amount * PAY_TAX)
+        net = amount - tax
+
+        async with db.pool.acquire() as conn:
+            sender_bal = await conn.fetchval(
+                "SELECT balance FROM economy WHERE guild_id=$1 AND user_id=$2 FOR UPDATE",
+                gid, uid
+            )
+            if sender_bal is None or sender_bal < amount:
+                return await interaction.followup.send(f"❌ You don't have **{amount:,}** coins.", ephemeral=True)
+
+            await conn.execute(
+                "UPDATE economy SET balance = balance - $1 WHERE guild_id=$2 AND user_id=$3",
+                amount, gid, uid
+            )
+            await conn.execute(
+                "INSERT INTO economy (guild_id, user_id, balance) VALUES ($1,$2,$3) "
+                "ON CONFLICT (guild_id, user_id) DO UPDATE SET balance = economy.balance + $3",
+                gid, tid, net
+            )
+
+        await log_txn(self.ctx.bot, gid, "Pay", self.ctx.author, self.target, net, f"Tax: {tax}")
+
+        await interaction.followup.send(
+            f"💸 You paid **{net:,} coins** (tax {tax:,}) to {self.target.mention}!",
+            ephemeral=True
+        )
+
+
 class BalanceView(discord.ui.View):
     def __init__(self, ctx, target: discord.Member):
         super().__init__(timeout=180)
-        self._ctx    = ctx
+        self._ctx = ctx
         self._target = target
         self._is_own = target.id == ctx.author.id
 
     @discord.ui.button(label="💸 Pay", style=discord.ButtonStyle.primary)
-    async def pay_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._ctx.author.id:
-            return await inter.response.send_message("Not for you.", ephemeral=True)
+    async def pay_btn(self, interaction: discord.Interaction, btn):
+        if interaction.user.id != self._ctx.author.id:
+            return await interaction.response.send_message("Not for you.", ephemeral=True)
         if not self._is_own:
-            # Pre-filled recipient
-            class AmtModal(discord.ui.Modal, title=f"Pay {self._target.display_name}"):
-                amount = discord.ui.TextInput(label="Amount (coins)", placeholder="e.g. 500", required=True)
-                async def on_submit(m_self, i2):
-                    await i2.response.defer(ephemeral=True)
-                    raw = m_self.amount.value.strip().replace(",","")
-                    if not raw.isdigit(): return await i2.followup.send("❌ Enter a valid number.", ephemeral=True)
-                    amt = int(raw)
-                    ctx2 = type("FC",(),{"guild":i2.guild,"author":i2.user,"send":i2.followup.send,"bot":i2.client})()
-                    await EconomyCog._static_pay(ctx2, self._target, amt, i2)
-            return await inter.response.send_modal(AmtModal())
-        # Show user select
-        sel = discord.ui.UserSelect(placeholder="Pay someone…")
-        async def sel_cb(i2):
-            rec = sel.values[0]
-            class AmtM(discord.ui.Modal, title=f"Pay {rec.display_name}"):
-                amount = discord.ui.TextInput(label="Amount", placeholder="e.g. 500", required=True)
-                async def on_submit(m_self, i3):
-                    raw = m_self.amount.value.strip().replace(",","")
-                    if not raw.isdigit(): return await i3.response.send_message("❌ Invalid amount.", ephemeral=True)
-                    ctx2 = type("FC",(),{"guild":i3.guild,"author":i3.user,"send":i3.followup.send,"bot":i3.client})()
-                    await EconomyCog._static_pay(ctx2, rec, int(raw), i3)
-            await i2.response.send_modal(AmtM())
-        sel.callback = sel_cb
-        class V(discord.ui.View):
-            def __init__(self_): super().__init__(timeout=60); self_.add_item(sel)
-        await inter.response.send_message("Select recipient:", view=V(), ephemeral=True)
+            modal = PayModal(self._target, self._ctx)
+            return await interaction.response.send_modal(modal)
+
+        class RecipientSelect(discord.ui.UserSelect):
+            async def callback(sel_inter):
+                if sel_inter.user.id != self._ctx.author.id:
+                    return await sel_inter.response.send_message("Not for you.", ephemeral=True)
+                rec = sel_select.values[0]
+                modal = PayModal(rec, self._ctx)
+                await sel_inter.response.send_modal(modal)
+
+        sel_select = RecipientSelect(placeholder="Pay someone...")
+        view = discord.ui.View(timeout=60)
+        view.add_item(sel_select)
+        await interaction.response.send_message("Select recipient:", view=view, ephemeral=True)
 
     @discord.ui.button(label="🎁 Give", style=discord.ButtonStyle.secondary)
-    async def give_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._ctx.author.id:
-            return await inter.response.send_message("Not for you.", ephemeral=True)
+    async def give_btn(self, interaction: discord.Interaction, button):
+        if interaction.user.id != self._ctx.author.id:
+            return await interaction.response.send_message("Not for you.", ephemeral=True)
         if not self._is_own:
-            class GiveM(discord.ui.Modal, title=f"Give {self._target.display_name} (max {GIVE_LIMIT:,})"):
-                amount = discord.ui.TextInput(label="Amount (max 1,000)", placeholder="e.g. 100", required=True)
-                async def on_submit(m_self, i2):
-                    await i2.response.defer(ephemeral=True)
-                    raw = m_self.amount.value.strip().replace(",","")
-                    if not raw.isdigit(): return await i2.followup.send("❌ Invalid.", ephemeral=True)
-                    ctx2 = type("FC",(),{"guild":i2.guild,"author":i2.user,"send":i2.followup.send,"bot":i2.client})()
-                    await EconomyCog._static_give(ctx2, self._target, int(raw), i2)
-            return await inter.response.send_modal(GiveM())
-        sel = discord.ui.UserSelect(placeholder="Give coins to…")
-        async def cb(i2):
-            rec = sel.values[0]
-            class GM(discord.ui.Modal, title=f"Give (max {GIVE_LIMIT:,})"):
-                amount = discord.ui.TextInput(label="Amount", placeholder="1-1000", required=True)
-                async def on_submit(m_self, i3):
-                    raw = m_self.amount.value.strip().replace(",","")
-                    if not raw.isdigit(): return await i3.response.send_message("❌ Invalid.", ephemeral=True)
-                    ctx2 = type("FC",(),{"guild":i3.guild,"author":i3.user,"send":i3.followup.send,"bot":i3.client})()
-                    await EconomyCog._static_give(ctx2, rec, int(raw), i3)
-            await i2.response.send_modal(GM())
-        sel.callback = cb
-        class V2(discord.ui.View):
-            def __init__(self_): super().__init__(timeout=60); self_.add_item(sel)
-        await inter.response.send_message("Select recipient:", view=V2(), ephemeral=True)
+            modal = GiveModal(self._target, self._ctx)
+            return await interaction.response.send_modal(modal)
+
+        class RecipientSelect(discord.ui.UserSelect):
+            async def callback(sel_inter):
+                if sel_inter.user.id != self._ctx.author.id:
+                    return await sel_inter.response.send_message("Not for you.", ephemeral=True)
+                rec = sel_select.values[0]
+                modal2 = GiveModal(rec, self._ctx)
+                await sel_inter.response.send_modal(modal2)
+
+        sel_select = RecipientSelect(placeholder="Give coins to...")
+        view = discord.ui.View(timeout=60)
+        view.add_item(sel_select)
+        await interaction.response.send_message("Select recipient:", view=view, ephemeral=True)
 
 
 class EconomyCog(commands.Cog, name="Economy"):
@@ -151,6 +250,7 @@ class EconomyCog(commands.Cog, name="Economy"):
     async def _do_daily(self, ctx):
         from datetime import timezone as _tz
         gid, uid, now = ctx.guild.id, ctx.author.id, datetime.now(timezone.utc)
+        now_naive = _utc_naive(now)
         async with db.pool.acquire() as conn:
             await ensure_user(conn, gid, uid)
         row = await db.pool.fetchrow(
@@ -172,7 +272,7 @@ class EconomyCog(commands.Cog, name="Economy"):
         total  = amount + bonus
         await db.pool.execute(
             "UPDATE economy SET balance=balance+$1,last_daily=$2,streak=$3,daily_boost=FALSE WHERE guild_id=$4 AND user_id=$5",
-            total, now, streak, gid, uid
+            total, now_naive, streak, gid, uid
         )
         await log_txn(self.bot, gid, "Daily", "System", ctx.author, total, f"Streak {streak}")
         from airi.milestones import update_achievement
@@ -361,9 +461,9 @@ class EconomyCog(commands.Cog, name="Economy"):
     async def buy(self, ctx, *, item: str = None):
         if item is None:
             return await self.shop(ctx)
-        key = item.lower().replace(" ","_")
-        if key not in SHOP_ITEMS:
-            return await _err(ctx, f"Unknown item `{key}`. Check `!shop`.")
+        key = _resolve_shop_key(item)
+        if not key:
+            return await _err(ctx, f"Unknown item `{item}`. Check `!shop`.")
         await _do_buy(ctx, key)
 
     # ── Title ──────────────────────────────────────────────────────
@@ -433,7 +533,7 @@ async def _do_buy(ctx_or_inter, key: str):
         await send(embed=discord.Embed(description=f"✅ **XP Boost** active for **{hours}h**!", color=C_SUCCESS))
     elif itype == "shield":
         from airi.inventory import add_item as _ai
-        await _ai(gid, uid, "shield", 1)
+        await _ai(gid, uid, "shield_7d", 1)
         await send(embed=discord.Embed(description="✅ **Waifu Shield** added to inventory!", color=C_SUCCESS))
     elif itype == "prenup":
         from airi.inventory import add_item as _ai

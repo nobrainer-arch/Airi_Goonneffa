@@ -16,6 +16,13 @@ AH_EXPIRE_H  = 48
 AH_MAX_SLOTS = 5
 PAGE_SIZE    = 6   # listings per page
 
+def _utc_naive(ts):
+    if ts is None:
+        return None
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+        return ts.astimezone(timezone.utc).replace(tzinfo=None)
+    return ts
+
 
 async def _count_active(guild_id, user_id):
     return await db.pool.fetchval(
@@ -405,7 +412,7 @@ async def _do_sell(interaction: discord.Interaction, gid: int, uid: int, item_ke
         if not ok:
             return await interaction.response.send_message("❌ Failed to remove item.", ephemeral=True)
 
-        expires = datetime.now(timezone.utc) + timedelta(hours=AH_EXPIRE_H)
+        expires = _utc_naive(datetime.now(timezone.utc) + timedelta(hours=AH_EXPIRE_H))
         item_info = ITEMS[item_key]
         row = await db.pool.fetchrow("""
             INSERT INTO auction_house

@@ -85,10 +85,10 @@ class DailyPanelView(discord.ui.View):
     async def _refresh(self, interaction: discord.Interaction):
         self._state = await _get_state(self._gid, self._uid)
         self._rebuild()
-        if interaction.response.is_done():
-            await interaction.edit_original_response(embed=self._embed(), view=self)
-        else:
+        try:
             await interaction.response.edit_message(embed=self._embed(), view=self)
+        except Exception:
+            await interaction.edit_original_response(embed=self._embed(), view=self)
 
     async def _run_cog_cmd(self, interaction: discord.Interaction, cog_name: str, method: str):
         """Run a cog method via a fake ctx. Returns True on success, False on handled error."""
@@ -131,20 +131,32 @@ class DailyPanelView(discord.ui.View):
         return False
 
     async def _daily(self, interaction: discord.Interaction):
-        if interaction.user.id != self._uid: return await interaction.response.send_message("Not for you.", ephemeral=True)
-        await interaction.response.defer()
+        if interaction.user.id != self._uid:
+            return await interaction.response.send_message("Not for you.", ephemeral=True)
+        try:
+            await interaction.response.defer_update()
+        except AttributeError:
+            await interaction.response.defer()
         await self._run_cog_cmd(interaction, "Economy", "_do_daily")
         await self._refresh(interaction)
 
     async def _work(self, interaction: discord.Interaction):
-        if interaction.user.id != self._uid: return await interaction.response.send_message("Not for you.", ephemeral=True)
-        await interaction.response.defer()
+        if interaction.user.id != self._uid:
+            return await interaction.response.send_message("Not for you.", ephemeral=True)
+        try:
+            await interaction.response.defer_update()
+        except AttributeError:
+            await interaction.response.defer()
         await self._run_cog_cmd(interaction, "Jobs", "_do_work")
         await self._refresh(interaction)
 
     async def _crime(self, interaction: discord.Interaction):
-        if interaction.user.id != self._uid: return await interaction.response.send_message("Not for you.", ephemeral=True)
-        await interaction.response.defer()
+        if interaction.user.id != self._uid:
+            return await interaction.response.send_message("Not for you.", ephemeral=True)
+        try:
+            await interaction.response.defer_update()
+        except AttributeError:
+            await interaction.response.defer()
         await self._run_cog_cmd(interaction, "Jobs", "_do_crime")
         await self._refresh(interaction)
 
