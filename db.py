@@ -8,6 +8,16 @@ async def init():
     global pool
     pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=2, max_size=10)
     async with pool.acquire() as conn:
+        # Clean up any orphaned composite type left from a failed previous table creation
+        table_exists = await conn.fetchval("SELECT to_regclass('public.rpg_characters')")
+        if not table_exists:
+            type_exists = await conn.fetchval(
+                "SELECT 1 FROM pg_type WHERE typname='rpg_characters' "
+                "AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname='public')"
+            )
+            if type_exists:
+                await conn.execute("DROP TYPE IF EXISTS public.rpg_characters CASCADE")
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS guild_config (
                 guild_id  BIGINT NOT NULL,
