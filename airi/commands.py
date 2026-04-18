@@ -47,7 +47,8 @@ def _get_solo_text(cmd: str) -> str:
 
 
 async def _build_embed(bot, ctx_or_inter, action_text: str, gif_url: str,
-                        cmd_name: str, author: discord.Member) -> discord.Embed:
+                        cmd_name: str, author: discord.Member,
+                        target_member: discord.Member | None = None) -> discord.Embed:
     if hasattr(ctx_or_inter, "guild"):
         guild = ctx_or_inter.guild
         gid   = guild.id
@@ -55,10 +56,21 @@ async def _build_embed(bot, ctx_or_inter, action_text: str, gif_url: str,
     else:
         return discord.Embed(description=action_text, color=C_SOCIAL)
 
+    target_member = target_member or author
+    stats = await db.pool.fetchrow(
+        "SELECT hugs_received, kisses_received, pats_received FROM social WHERE guild_id=$1 AND user_id=$2",
+        gid, target_member.id
+    )
+    pats = (stats or {}).get("pats_received", 0) or 0
+    tracked = sum(( (stats or {}).get("hugs_received", 0) or 0,
+                    (stats or {}).get("kisses_received", 0) or 0,
+                    pats ))
+    extra = f"\n\n*Pats received: {pats:,} · Tracked actions: {tracked:,}*" if stats else ""
+
     title = await db.pool.fetchval(
         "SELECT active_title FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
     )
-    e = discord.Embed(description=action_text, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
+    e = discord.Embed(description=action_text + extra, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
     e.set_author(name=bot.user.display_name, icon_url=bot.user.display_avatar.url)
     tip = "  |  !rpblock @user to block" if cmd_name in NSFW_COMMANDS else ""
     e.set_footer(text=f"{'✨ '+title+'  ·  ' if title else ''}{author.display_name}{tip}")
@@ -109,14 +121,10 @@ class BackView(discord.ui.View):
         action = raw.format(author=interaction.user.display_name,
                             target=author_m.mention if author_m else f"<@{self._author}>")
 
-        title = await db.pool.fetchval(
-            "SELECT active_title FROM economy WHERE guild_id=$1 AND user_id=$2",
-            interaction.guild.id, interaction.user.id
-        )
-        e = discord.Embed(description=action, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
-        e.set_author(name=self._bot.user.display_name, icon_url=self._bot.user.display_avatar.url)
-        e.set_footer(text=f"{'✨ '+title+'  ·  ' if title else ''}{interaction.user.display_name}")
-        e.set_image(url=gif_url)
+        if author_m:
+            e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user, target_member=author_m)
+        else:
+            e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user)
         await interaction.followup.send(embed=e)
 
 
@@ -192,7 +200,7 @@ class RecipientSelect(discord.ui.UserSelect):
                     await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
                     continue
 
-                e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user)
+                e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user, target_member=member)
                 view = BackView(self._cmd, member.id, self._author, self._bot) if self._cmd in config.BACK_ACTIONS else None
                 if view:
                     await interaction.followup.send(embed=e, view=view)
@@ -338,7 +346,7 @@ def setup_commands(bot, commands_data: dict):
                         action = raw.format(author=ctx.author.display_name, target="")
                         gif_url, _ = await get_gif(name, nsfw)
                         if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
-                        e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author)
+                        e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=ctx.author)
                         return await ctx.send(embed=e)
                     else:
                         # Show recipient picker for ALL commands with targets
@@ -401,7 +409,7 @@ def setup_commands(bot, commands_data: dict):
                 action  = raw.format(author=ctx.author.display_name, target=target.mention)
                 gif_url, _ = await get_gif(name, nsfw)
                 if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
-                e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author)
+                e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=target)
                 view = BackView(name, target.id, ctx.author.id, ctx.bot) if name in config.BACK_ACTIONS else None
                 await ctx.send(embed=e, view=view)
                 await _increment_action_counter(ctx, name, target)
@@ -445,9 +453,7 @@ class HookupRequestView(discord.ui.View):
         action  = raw.format(author=self._author.display_name, target=self._target.mention)
         gif_url, _ = await get_gif(self._cmd, is_nsfw)
         if not gif_url: return
-        e = discord.Embed(description=action, color=C_SOCIAL, timestamp=datetime.now(timezone.utc))
-        e.set_image(url=gif_url)
-        e.set_footer(text=f"{self._author.display_name}  |  Consented")
+        e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, self._author, target_member=self._target)
         guild = self._author.guild
         for ch in guild.text_channels:
             p = ch.permissions_for(guild.me)

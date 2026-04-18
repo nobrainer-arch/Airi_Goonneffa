@@ -1,7 +1,6 @@
 # db.py — database pool + schema init
 import asyncpg
 import config
-import asyncio
 
 pool: asyncpg.Pool = None  # type: ignore
 
@@ -9,17 +8,6 @@ async def init():
     global pool
     pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=2, max_size=10)
     async with pool.acquire() as conn:
-        # Clean up any orphaned composite type left from a failed previous table creation
-        table_exists = await conn.fetchval("SELECT to_regclass('public.rpg_characters')")
-        if not table_exists:
-            type_exists = await conn.fetchval(
-                "SELECT 1 FROM pg_type WHERE typname='rpg_characters' "
-                "AND typnamespace = (SELECT oid FROM pg_namespace WHERE nspname='public')"
-            )
-            if type_exists:
-                await conn.execute("DROP TYPE IF EXISTS public.rpg_characters CASCADE")
-
-        # First, tables with no foreign dependencies
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS guild_config (
                 guild_id  BIGINT NOT NULL,
@@ -125,8 +113,7 @@ async def init():
                 dowry        INTEGER NOT NULL DEFAULT 0,
                 prenup       BOOLEAN NOT NULL DEFAULT FALSE,
                 status       TEXT   NOT NULL DEFAULT 'pending',
-                created_at   TIMESTAMP NOT NULL DEFAULT NOW(),
-                expires_at   TIMESTAMP
+                created_at   TIMESTAMP NOT NULL DEFAULT NOW()
             );
 
             CREATE TABLE IF NOT EXISTS court_cases (
@@ -190,6 +177,22 @@ async def init():
                 message_id          BIGINT
             );
 
+            CREATE TABLE IF NOT EXISTS card_market (
+                id          SERIAL PRIMARY KEY,
+                guild_id    BIGINT NOT NULL,
+                seller_id   BIGINT NOT NULL,
+                card_id     INTEGER NOT NULL REFERENCES anime_waifus(id) ON DELETE CASCADE,
+                price       INTEGER NOT NULL,
+                min_bid     INTEGER,
+                current_bid INTEGER,
+                current_bidder BIGINT,
+                status      TEXT   NOT NULL DEFAULT 'active',
+                listed_at   TIMESTAMP NOT NULL DEFAULT NOW(),
+                expires_at  TIMESTAMP NOT NULL,
+                channel_id  BIGINT,
+                message_id  BIGINT
+            );
+
             CREATE TABLE IF NOT EXISTS waifu_market (
                 id              SERIAL PRIMARY KEY,
                 guild_id        BIGINT NOT NULL,
@@ -236,6 +239,45 @@ async def init():
                 last_collect TIMESTAMP
             );
 
+
+            CREATE TABLE IF NOT EXISTS rpg_characters (
+                guild_id      BIGINT  NOT NULL,
+                user_id       BIGINT  NOT NULL,
+                class         TEXT    NOT NULL DEFAULT 'Warrior',
+                realm_level   INTEGER NOT NULL DEFAULT 1,
+                strength      INTEGER NOT NULL DEFAULT 10,
+                constitution  INTEGER NOT NULL DEFAULT 10,
+                agility       INTEGER NOT NULL DEFAULT 10,
+                spirit        INTEGER NOT NULL DEFAULT 10,
+                hp_max        INTEGER NOT NULL DEFAULT 100,
+                hp_current    INTEGER NOT NULL DEFAULT 100,
+                mana_max      INTEGER NOT NULL DEFAULT 50,
+                mana_current  INTEGER NOT NULL DEFAULT 50,
+                stat_points   INTEGER NOT NULL DEFAULT 5,
+                talent        TEXT,
+                PRIMARY KEY (guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS rpg_skills (
+                id          SERIAL PRIMARY KEY,
+                guild_id    BIGINT NOT NULL,
+                user_id     BIGINT NOT NULL,
+                skill_name  TEXT   NOT NULL,
+                skill_rank  TEXT   NOT NULL DEFAULT 'F',
+                skill_level INTEGER NOT NULL DEFAULT 1,
+                mana_cost   INTEGER NOT NULL DEFAULT 10,
+                UNIQUE (guild_id, user_id, skill_name)
+            );
+            CREATE TABLE IF NOT EXISTS rpg_equipment (
+                guild_id     BIGINT NOT NULL,
+                user_id      BIGINT NOT NULL,
+                slot         TEXT   NOT NULL,
+                item_name    TEXT   NOT NULL,
+                item_rank    TEXT   NOT NULL DEFAULT 'F',
+                effect_desc  TEXT   DEFAULT '',
+                effect_key   TEXT,
+                effect_value FLOAT  DEFAULT 0,
+                PRIMARY KEY (guild_id, user_id, slot)
+            );
             CREATE TABLE IF NOT EXISTS gacha_pity (
                 guild_id BIGINT NOT NULL,
                 user_id  BIGINT NOT NULL,
@@ -253,7 +295,6 @@ async def init():
                 PRIMARY KEY (guild_id, user_id, item_key)
             );
 
-            -- anime_waifus must come before card_market (which references it)
             CREATE TABLE IF NOT EXISTS anime_waifus (
                 id           SERIAL PRIMARY KEY,
                 guild_id     BIGINT NOT NULL,
@@ -270,23 +311,6 @@ async def init():
                 affection    INTEGER DEFAULT 0,
                 boosted_until TIMESTAMP,
                 obtained_at  TIMESTAMP NOT NULL DEFAULT NOW()
-            );
-
-            -- card_market now references anime_waifus, so it's after
-            CREATE TABLE IF NOT EXISTS card_market (
-                id          SERIAL PRIMARY KEY,
-                guild_id    BIGINT NOT NULL,
-                seller_id   BIGINT NOT NULL,
-                card_id     INTEGER NOT NULL REFERENCES anime_waifus(id) ON DELETE CASCADE,
-                price       INTEGER NOT NULL,
-                min_bid     INTEGER,
-                current_bid INTEGER,
-                current_bidder BIGINT,
-                status      TEXT   NOT NULL DEFAULT 'active',
-                listed_at   TIMESTAMP NOT NULL DEFAULT NOW(),
-                expires_at  TIMESTAMP NOT NULL,
-                channel_id  BIGINT,
-                message_id  BIGINT
             );
 
             CREATE TABLE IF NOT EXISTS banners (
@@ -351,46 +375,6 @@ async def init():
                 gender  TEXT   NOT NULL DEFAULT 'u'
             );
 
-            CREATE TABLE IF NOT EXISTS rpg_characters (
-                guild_id     BIGINT  NOT NULL,
-                user_id      BIGINT  NOT NULL,
-                class        TEXT    NOT NULL DEFAULT 'Warrior',
-                realm_level  INTEGER NOT NULL DEFAULT 1,
-                strength     INTEGER NOT NULL DEFAULT 10,
-                defence      INTEGER NOT NULL DEFAULT 5,
-                agility      INTEGER NOT NULL DEFAULT 5,
-                spirit       INTEGER NOT NULL DEFAULT 5,
-                hp_max       INTEGER NOT NULL DEFAULT 100,
-                hp_current   INTEGER NOT NULL DEFAULT 100,
-                mana_max     INTEGER NOT NULL DEFAULT 50,
-                mana_current INTEGER NOT NULL DEFAULT 50,
-                stat_points  INTEGER NOT NULL DEFAULT 0,
-                talent       TEXT,
-                PRIMARY KEY (guild_id, user_id)
-            );
-
-            CREATE TABLE IF NOT EXISTS rpg_skills (
-                id          SERIAL PRIMARY KEY,
-                guild_id    BIGINT NOT NULL,
-                user_id     BIGINT NOT NULL,
-                skill_name  TEXT   NOT NULL,
-                skill_rank  TEXT   NOT NULL DEFAULT 'F',
-                mana_cost   INTEGER NOT NULL DEFAULT 10,
-                UNIQUE (guild_id, user_id, skill_name)
-            );
-
-            CREATE TABLE IF NOT EXISTS rpg_equipment (
-                guild_id     BIGINT NOT NULL,
-                user_id      BIGINT NOT NULL,
-                slot         TEXT   NOT NULL,
-                item_name    TEXT   NOT NULL,
-                item_rank    TEXT   NOT NULL DEFAULT 'F',
-                effect_desc  TEXT   DEFAULT '',
-                effect_key   TEXT,
-                effect_value FLOAT  DEFAULT 0,
-                PRIMARY KEY (guild_id, user_id, slot)
-            );
-
             CREATE TABLE IF NOT EXISTS online_streaks (
                 guild_id             BIGINT NOT NULL,
                 user_id              BIGINT NOT NULL,
@@ -418,6 +402,7 @@ async def init():
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS message_id BIGINT",
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS listing_channel_id BIGINT",
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS listing_message_id BIGINT",
+        # Copy old naming to new naming if populated
         "UPDATE auction_house SET channel_id=listing_channel_id WHERE channel_id IS NULL AND listing_channel_id IS NOT NULL",
         "UPDATE auction_house SET message_id=listing_message_id WHERE message_id IS NULL AND listing_message_id IS NOT NULL",
         "ALTER TABLE economy ADD COLUMN IF NOT EXISTS kakera INTEGER NOT NULL DEFAULT 0",
@@ -438,6 +423,7 @@ async def init():
         "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS affection INTEGER DEFAULT 0",
         "ALTER TABLE anime_waifus ADD COLUMN IF NOT EXISTS boosted_until TIMESTAMP",
         "ALTER TABLE claims ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP NOT NULL DEFAULT NOW()",
+        # FIX: was 'last_collected' in original migration (wrong column name)
         "ALTER TABLE businesses ADD COLUMN IF NOT EXISTS last_collect TIMESTAMP",
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS rarity TEXT NOT NULL DEFAULT 'common'",
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS min_bid INTEGER",

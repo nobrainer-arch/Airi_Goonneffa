@@ -168,7 +168,7 @@ async def setup_hook():
     from airi.leaderboard   import LeaderboardCog
     from airi.ignore        import IgnoreCog
     from airi.banners       import BannersCog
-    from airi.rpg_stats     import RPGStatsCog   # FIX: was missing
+    from airi.rpg           import RPGStatsCog, DungeonCog
 
     for cog_cls in [
         EconomyCog, XPCog, SocialCog, MarketplaceCog, GuildConfigCog,
@@ -176,7 +176,7 @@ async def setup_hook():
         BusinessCog, InventoryCog, AuctionHouseCog, AuditLogCog,
         AvatarCog, OrdersCog, AFKCog, GenderCog, KakeraCog,
         MilestonesCog, AnimeCharsCog, EventsCog, LeaderboardCog,
-        IgnoreCog, BannersCog,RPGStatsCog,
+        IgnoreCog, BannersCog, RPGStatsCog, DungeonCog,
     ]:
         await bot.add_cog(cog_cls(bot))
 

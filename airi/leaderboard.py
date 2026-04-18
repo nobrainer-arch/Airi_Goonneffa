@@ -2,6 +2,7 @@
 import discord
 from datetime import datetime, timezone
 import db
+from airi.rpg.classes import get_realm
 
 # Category definitions: (display name, query builder function)
 # Each function returns (rows, value_key) for that guild
@@ -48,6 +49,14 @@ async def _lb_pats(guild_id: int):
         guild_id
     )
     return rows, "pats_received"
+
+async def _lb_rpg(guild_id: int):
+    rows = await db.pool.fetch(
+        "SELECT user_id, class, realm_level, (strength + constitution + agility + spirit) AS power "
+        "FROM rpg_characters WHERE guild_id=$1 ORDER BY power DESC LIMIT 10",
+        guild_id
+    )
+    return rows, "power"
 
 async def _lb_marriage_duration(guild_id: int):
     # Get active marriages, compute days since started_at, order by longest
@@ -112,6 +121,7 @@ LB_CATEGORIES = {
     "hugs":      ("🤗 Hugs Received", _lb_hugs),
     "kisses":    ("💋 Kisses Received", _lb_kisses),
     "pats":      ("🤚 Pats Received", _lb_pats),
+    "rpg":       ("⚔️ RPG Power", _lb_rpg),
     "marriage":  ("💍 Marriage Duration", _lb_marriage_duration),
     "waifuscore":("👑 Waifu Score", _lb_waifu_score),
     "proposals": ("💌 Proposals Made", _lb_proposals),
@@ -147,6 +157,10 @@ async def _build_lb(guild: discord.Guild, category: str) -> discord.Embed:
             val_str = f"{int(value)} days"
         elif category == "waifuscore":
             val_str = f"{int(value):,} pts"
+        elif category == "rpg":
+            realm, rem = get_realm(row.get("realm_level", 1))
+            cls = row.get("class", "Unknown")
+            val_str = f"{int(value):,} power · {cls} · {rem} {realm}"
         else:
             val_str = f"{int(value):,}"
         medal = medals[i] if i < 3 else f"`{i+1}`"
