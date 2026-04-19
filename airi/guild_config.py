@@ -284,14 +284,24 @@ class GuildConfigCog(commands.Cog, name="GuildConfig"):
         """Set the judge role for divorce court."""
         if not self._admin(ctx): return await _err(ctx, "Need Manage Server permission.")
         if role is None:
-            class JView(discord.ui.View):
-                def __init__(self_): super().__init__(timeout=60)
-                @discord.ui.role_select(placeholder="Pick the judge role…")
-                async def pick(self_, inter, sel):
-                    if inter.user.id != ctx.author.id: return await inter.response.send_message("Not for you.", ephemeral=True)
-                    await set_value(inter.guild_id, K_JUDGE, str(sel.values[0].id))
-                    for i in self_.children: i.disabled = True
-                    await inter.response.edit_message(content=f"✅ Judge role set to {sel.values[0].mention}.", view=self_)
-            return await ctx.send("Pick the judge role:", view=JView())
+            # Use RoleSelect class directly — @discord.ui.role_select decorator removed in 2.x
+            sel = discord.ui.RoleSelect(
+                placeholder="Pick the judge role…",
+                min_values=1, max_values=1,
+            )
+            async def role_cb(inter: discord.Interaction):
+                if inter.user.id != ctx.author.id:
+                    return await inter.response.send_message("Not for you.", ephemeral=True)
+                picked = sel.values[0]
+                await set_value(inter.guild_id, K_JUDGE, str(picked.id))
+                for item in jview.children:
+                    item.disabled = True
+                await inter.response.edit_message(
+                    content=f"✅ Judge role set to {picked.mention}.", view=jview
+                )
+            sel.callback = role_cb
+            jview = discord.ui.View(timeout=120)
+            jview.add_item(sel)
+            return await ctx.send("Pick the judge role:", view=jview)
         await set_value(ctx.guild.id, K_JUDGE, str(role.id))
         await ctx.send(f"✅ Judge role → {role.mention}", delete_after=8)

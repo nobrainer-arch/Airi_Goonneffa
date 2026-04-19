@@ -14,6 +14,28 @@ REDDIT_UA  = "AiriBot/2.0 (Discord bot)"
 # ── gifs.json pools (NSFW fallback, loaded at startup) ─────────────
 _nsfw_pool: dict[str, list[str]] = {}
 
+# ── Anti-repeat GIF tracking ─────────────────────────────────────
+# Maps (user_id, command) -> last gif URL to prevent consecutive repeats
+_last_gif_cache: dict[tuple, str] = {}
+
+def _pick_no_repeat(urls: list[str], user_id: int | None, cmd: str) -> str | None:
+    """Pick a random URL that wasn't the last one used by this user for this command."""
+    if not urls:
+        return None
+    if len(urls) == 1:
+        return urls[0]
+    key     = (user_id, cmd)
+    last    = _last_gif_cache.get(key)
+    choices = [u for u in urls if u != last] or urls
+    picked  = random.choice(choices)
+    _last_gif_cache[key] = picked
+    # Trim cache to 200 entries to avoid unbounded memory growth
+    if len(_last_gif_cache) > 200:
+        oldest = list(_last_gif_cache.keys())[:100]
+        for k in oldest:
+            _last_gif_cache.pop(k, None)
+    return picked
+
 def load_gifs_pool(gifs_data: dict):
     """
     Load gifs.json into _nsfw_pool only (the json is now NSFW-only).
@@ -223,7 +245,7 @@ async def _otaku(reaction: str) -> str | None:
     return data.get("url") if data else None
 
 # ── Public: SFW ────────────────────────────────────────────────────
-async def get_sfw_gif(command: str) -> tuple[str | None, str]:
+async def get_sfw_gif(command: str, user_id: int | None = None) -> tuple[str | None, str]:
     """SFW priority: nekos.best → nekos.life → waifu.pics → Klipy → OtakuGIFs. gifs.json is NOT used for SFW."""
     cat = NEKOSBEST_SFW.get(command)
     if cat:
@@ -252,7 +274,7 @@ async def get_sfw_gif(command: str) -> tuple[str | None, str]:
     return None, ""
 
 # ── Public: NSFW ───────────────────────────────────────────────────
-async def get_nsfw_gif(command: str) -> tuple[str | None, str]:
+async def get_nsfw_gif(command: str, user_id: int | None = None) -> tuple[str | None, str]:
     """
     NSFW priority: gifs.json pool (local) → Klipy live search → waifu.pics nsfw.
     gifs.json is the primary source because it contains curated NSFW content.
@@ -281,14 +303,15 @@ async def get_nsfw_gif(command: str) -> tuple[str | None, str]:
     return None, ""
 
 # ── Public: unified entry point ─────────────────────────────────────
-async def get_gif(command: str, is_nsfw: bool) -> tuple[str | None, str]:
+async def get_gif(command: str, is_nsfw: bool, user_id: int | None = None) -> tuple[str | None, str]:
+    """Get a GIF, ensuring no consecutive repeat for the same user+command pair."""
     if is_nsfw:
-        url, src = await get_nsfw_gif(command)
+        url, src = await get_nsfw_gif(command, user_id=user_id)
         if url: return url, src
-        url, src = await get_sfw_gif(command)  # fallback to SFW if no NSFW found
+        url, src = await get_sfw_gif(command, user_id=user_id)
         if url: return url, src
     else:
-        url, src = await get_sfw_gif(command)
+        url, src = await get_sfw_gif(command, user_id=user_id)
         if url: return url, src
     return None, ""
 

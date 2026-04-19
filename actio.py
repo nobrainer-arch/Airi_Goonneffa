@@ -1172,5 +1172,3 @@ ACTIONS = {
         ]
     }
 }
-
-ACTIONS_SOLO = {}

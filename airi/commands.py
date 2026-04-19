@@ -112,7 +112,7 @@ class BackView(discord.ui.View):
         is_nsfw  = self._cmd in NSFW_COMMANDS
 
         # Get a DIFFERENT gif than might have been shown (new random pull)
-        gif_url, _ = await get_gif(self._cmd, is_nsfw)
+        gif_url, _ = await get_gif(self._cmd, is_nsfw, user_id=getattr(interaction,"user",None) and interaction.user.id)
         if not gif_url:
             await interaction.followup.send("Couldn't fetch a GIF right now.", ephemeral=True)
             return
@@ -195,7 +195,7 @@ class RecipientSelect(discord.ui.UserSelect):
                 tg      = await get_gender(str(member.id)) or "u"
                 raw     = _get_action_text(self._cmd, ag, tg)
                 action  = raw.format(author=interaction.user.display_name, target=member.mention)
-                gif_url, _ = await get_gif(self._cmd, self._is_nsfw)
+                gif_url, _ = await get_gif(self._cmd, self._is_nsfw, user_id=getattr(interaction,"user",None) and interaction.user.id)
                 if not gif_url:
                     await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
                     continue
@@ -344,7 +344,7 @@ def setup_commands(bot, commands_data: dict):
                     if name in config.SOLO_COMMANDS:
                         raw    = _get_solo_text(name)
                         action = raw.format(author=ctx.author.display_name, target="")
-                        gif_url, _ = await get_gif(name, nsfw)
+                        gif_url, _ = await get_gif(name, nsfw, user_id=getattr(ctx,"author",None) and ctx.author.id)
                         if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
                         e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=ctx.author)
                         return await ctx.send(embed=e)
@@ -407,7 +407,7 @@ def setup_commands(bot, commands_data: dict):
                 tg = await get_gender(str(target.id))     or "u"
                 raw     = _get_action_text(name, ag, tg)
                 action  = raw.format(author=ctx.author.display_name, target=target.mention)
-                gif_url, _ = await get_gif(name, nsfw)
+                gif_url, _ = await get_gif(name, nsfw, user_id=getattr(ctx,"author",None) and ctx.author.id)
                 if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
                 e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=target)
                 view = BackView(name, target.id, ctx.author.id, ctx.bot) if name in config.BACK_ACTIONS else None
@@ -451,7 +451,7 @@ class HookupRequestView(discord.ui.View):
         is_nsfw = self._cmd in NSFW_COMMANDS
         raw     = _get_action_text(self._cmd, self._ag, self._tg)
         action  = raw.format(author=self._author.display_name, target=self._target.mention)
-        gif_url, _ = await get_gif(self._cmd, is_nsfw)
+        gif_url, _ = await get_gif(self._cmd, is_nsfw, user_id=getattr(interaction,"user",None) and interaction.user.id)
         if not gif_url: return
         e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, self._author, target_member=self._target)
         guild = self._author.guild
