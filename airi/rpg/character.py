@@ -360,3 +360,16 @@ class RaceSelectView(discord.ui.View):
             bonus = self._bonus_desc(race)
             e.add_field(name=race, value=bonus, inline=True)
         return e
+
+class CharacterCog(commands.Cog, name="Character"):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.hybrid_command(name="mychar", aliases=["character", "stats"], description="View your RPG character sheet")
+    async def mychar(self, ctx, member: discord.Member = None):
+        target = member or ctx.author
+        char = await get_char_full(ctx.guild.id, target.id)
+        if not char:
+            return await ctx.send(embed=discord.Embed(
+                description="No character yet! Use `/rpg` to create one.", color=C_WARN))
+        await ctx.send(embed=char_sheet_embed(char, target))

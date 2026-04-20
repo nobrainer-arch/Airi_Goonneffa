@@ -32,8 +32,12 @@ bot = commands.Bot(
 
 @bot.event
 async def on_ready():
-    await bot.tree.sync()
-    print(f"✅ Airi online as {bot.user} ({bot.user.id})")
+    await bot.tree.sync()  # Sync global commands
+    for guild in bot.guilds:
+        await bot.tree.sync(guild=guild)  # Sync guild-specific
+    print(f"✅ Airi online as {bot.user}")
+    print(f"✅ Synced slash commands for {len(bot.guilds)} guilds")
+
 
 @bot.event
 async def on_message(message: discord.Message):

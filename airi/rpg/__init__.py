@@ -6,7 +6,8 @@
 #   rpg/stats.py     — RPGStatsCog (!rpg command panel)
 #   rpg/dungeon.py   — DungeonCog (!dungeon command, monster DB)
 from .stats import RPGStatsCog
-from .dungeon import DungeonCog
+
+from .dungeon_v2 import DungeonCog
 
 from .guild_system import GuildSystemCog
 

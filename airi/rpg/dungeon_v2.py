@@ -847,3 +847,21 @@ class DungeonCog(commands.Cog, name="Dungeon"):
             ),
             color=C_INFO,
         ), delete_after=20)
+
+class DungeonV2Cog(commands.Cog, name="DungeonV2"):
+    def __init__(self, bot):
+        self.bot = bot
+        self._dungeon = DungeonCog(bot)
+
+    @commands.hybrid_command(name="dungeon2", aliases=["d2", "explore2"],
+                             description="Enter a dungeon with difficulties, travel delay, and auto-battle")
+    async def dungeon(self, ctx):
+        await self._dungeon.dungeon(ctx)
+
+    @commands.hybrid_command(name="usecd", description="Use a Dungeon Cooldown Remover charge")
+    async def usecd(self, ctx):
+        await self._dungeon.usecd(ctx)
+
+    @commands.hybrid_command(name="cdcharges", description="Check your Dungeon Cooldown Remover charges")
+    async def cdcharges(self, ctx):
+        await self._dungeon.cdcharges(ctx)
