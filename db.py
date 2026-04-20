@@ -395,6 +395,39 @@ async def init():
                 PRIMARY KEY (guild_id, user_id, slot)
             );
 
+
+            CREATE TABLE IF NOT EXISTS rpg_guilds (
+                id                  SERIAL PRIMARY KEY,
+                server_id           BIGINT NOT NULL,
+                name                TEXT NOT NULL,
+                description         TEXT,
+                leader_id           BIGINT NOT NULL,
+                exp_pool            INTEGER NOT NULL DEFAULT 0,
+                honor_points        INTEGER NOT NULL DEFAULT 0,
+                gvg_wins            INTEGER NOT NULL DEFAULT 0,
+                gvg_losses          INTEGER NOT NULL DEFAULT 0,
+                member_count        INTEGER NOT NULL DEFAULT 0,
+                controlled_dungeons TEXT DEFAULT '',
+                last_gvg            TIMESTAMP,
+                created_at          TIMESTAMP DEFAULT NOW(),
+                UNIQUE (server_id, name)
+            );
+
+            CREATE TABLE IF NOT EXISTS rpg_guild_members (
+                guild_id    INTEGER NOT NULL REFERENCES rpg_guilds(id) ON DELETE CASCADE,
+                user_id     BIGINT NOT NULL,
+                role        TEXT NOT NULL DEFAULT 'member',
+                joined_at   TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (guild_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS event_claims (
+                guild_id   BIGINT NOT NULL,
+                user_id    BIGINT NOT NULL,
+                event_id   TEXT NOT NULL,
+                claimed_at TIMESTAMP DEFAULT NOW(),
+                PRIMARY KEY (guild_id, user_id, event_id)
+            );
             CREATE TABLE IF NOT EXISTS online_streaks (
                 guild_id             BIGINT NOT NULL,
                 user_id              BIGINT NOT NULL,
@@ -451,6 +484,7 @@ async def init():
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS current_bidder_id BIGINT",
         "ALTER TABLE auction_house ADD COLUMN IF NOT EXISTS price INTEGER NOT NULL DEFAULT 0",
         "ALTER TABLE work_log ADD COLUMN IF NOT EXISTS last_explore TIMESTAMP",
+        "ALTER TABLE work_log ADD COLUMN IF NOT EXISTS last_market TIMESTAMP",
         # Convert old 'defence' to 'constitution' if still present (for very old schemas)
         "ALTER TABLE rpg_characters RENAME COLUMN defence TO constitution",
         "ALTER TABLE rpg_characters ALTER COLUMN constitution SET DEFAULT 10",

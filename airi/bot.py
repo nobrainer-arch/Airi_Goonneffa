@@ -168,7 +168,7 @@ async def setup_hook():
     from airi.leaderboard   import LeaderboardCog
     from airi.ignore        import IgnoreCog
     from airi.banners       import BannersCog
-    from airi.rpg           import RPGStatsCog, DungeonCog
+    from airi.rpg           import RPGStatsCog, DungeonCog, GuildSystemCog, EventsCog, MarketCog
 
     for cog_cls in [
         EconomyCog, XPCog, SocialCog, MarketplaceCog, GuildConfigCog,

@@ -7,3 +7,9 @@
 #   rpg/dungeon.py   — DungeonCog (!dungeon command, monster DB)
 from .stats import RPGStatsCog
 from .dungeon import DungeonCog
+
+from .guild_system import GuildSystemCog
+
+from .events import EventsCog
+
+from .market import MarketCog
