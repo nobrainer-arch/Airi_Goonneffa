@@ -58,14 +58,31 @@ async def _build_embed(bot, ctx_or_inter, action_text: str, gif_url: str,
 
     target_member = target_member or author
     stats = await db.pool.fetchrow(
-        "SELECT hugs_received, kisses_received, pats_received FROM social WHERE guild_id=$1 AND user_id=$2",
+        """SELECT hugs_received, kisses_received, pats_received,
+                  tease_count, slap_count, poke_count, bite_count,
+                  wave_count, cuddle_count, lick_count
+           FROM social WHERE guild_id=$1 AND user_id=$2""",
         gid, target_member.id
     )
-    pats = (stats or {}).get("pats_received", 0) or 0
-    tracked = sum(( (stats or {}).get("hugs_received", 0) or 0,
-                    (stats or {}).get("kisses_received", 0) or 0,
-                    pats ))
-    extra = f"\n\n*Pats received: {pats:,} · Tracked actions: {tracked:,}*" if stats else ""
+    # Map command name → (stat column, emoji, label)
+    CMD_COUNTER = {
+        "hug":    ("hugs_received",    "🤗", "hugs"),
+        "kiss":   ("kisses_received",  "💋", "kisses"),
+        "pat":    ("pats_received",    "🤚", "pats"),
+        "tease":  ("tease_count",      "😏", "teases"),
+        "slap":   ("slap_count",       "✋", "slaps"),
+        "poke":   ("poke_count",       "👉", "pokes"),
+        "bite":   ("bite_count",       "😈", "bites"),
+        "wave":   ("wave_count",       "👋", "waves"),
+        "cuddle": ("cuddle_count",     "🤗", "cuddles"),
+        "lick":   ("lick_count",       "👅", "licks"),
+    }
+    extra = ""
+    if stats and cmd_name in CMD_COUNTER and target_member != author:
+        col, emoji, word = CMD_COUNTER[cmd_name]
+        count = int((stats or {}).get(col, 0) or 0)
+        # +1 because this action just happened (counter incremented after embed build)
+        extra = f"\n{emoji} **{target_member.display_name}** has received **{count+1:,}** {word}."
 
     title = await db.pool.fetchval(
         "SELECT active_title FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
@@ -232,7 +249,18 @@ class RecipientView(discord.ui.View):
 
 # ── Action counter + milestone trigger ────────────────────────────
 async def _increment_action_counter(ctx_or_inter, cmd: str, target: discord.Member):
-    counter_map = {"hug": "hugs_received", "kiss": "kisses_received", "pat": "pats_received"}
+    counter_map = {
+        "hug":    "hugs_received",
+        "kiss":   "kisses_received",
+        "pat":    "pats_received",
+        "tease":  "tease_count",
+        "slap":   "slap_count",
+        "poke":   "poke_count",
+        "bite":   "bite_count",
+        "wave":   "wave_count",
+        "cuddle": "cuddle_count",
+        "lick":   "lick_count",
+    }
     col = counter_map.get(cmd)
     if not col: return
     if hasattr(ctx_or_inter, "guild"):
