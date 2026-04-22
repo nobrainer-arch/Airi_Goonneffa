@@ -1,8 +1,7 @@
-# airi/rpg/__init__.py — RPG package
-# char.py     = unified character module (replaces stats.py + character.py)
-# dungeon_final.py = unified dungeon (replaces dungeon.py + dungeon_v2.py)
-from .char         import RPGStatsCog
+# airi/rpg/__init__.py
+from .char          import RPGStatsCog
 from .dungeon_final import DungeonCog
-from .guild_system import GuildSystemCog
-from .events       import EventsCog
-from .market       import MarketCog
+from .guild_system  import GuildSystemCog
+from .events        import EventsCog
+from .market        import MarketCog      # MarketCog kept but /market now redirects to /shop
+from .shop          import RPGShopCog

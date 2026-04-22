@@ -172,7 +172,7 @@ async def setup_hook():
     from airi.leaderboard   import LeaderboardCog
     from airi.ignore        import IgnoreCog
     from airi.banners       import BannersCog
-    from airi.rpg           import RPGStatsCog, DungeonCog, GuildSystemCog, EventsCog, MarketCog
+    from airi.rpg           import RPGStatsCog, DungeonCog, GuildSystemCog, EventsCog, MarketCog, RPGShopCog
     from airi.hub          import EconomyHub, SocialHub, LeaderboardHub, ServerHub
 
     for cog_cls in [
@@ -181,7 +181,11 @@ async def setup_hook():
         BusinessCog, InventoryCog, AuctionHouseCog, AuditLogCog,
         AvatarCog, OrdersCog, AFKCog, GenderCog, KakeraCog,
         MilestonesCog, AnimeCharsCog, EventsCog, LeaderboardCog,
-        IgnoreCog, BannersCog, RPGStatsCog, DungeonCog,
+        IgnoreCog, BannersCog,
+        # RPG system
+        RPGStatsCog, DungeonCog, GuildSystemCog, MarketCog, RPGShopCog,
+        # Consolidated hub commands
+        EconomyHub, SocialHub, LeaderboardHub, ServerHub,
     ]:
         await bot.add_cog(cog_cls(bot))
 

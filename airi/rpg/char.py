@@ -2,7 +2,7 @@
 # Single source of truth for: get_char, create_char, get_skills, get_equipment,
 # XP system, VIT/HP/Mana formulas, race bonuses, class growth, character sheet embed
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from datetime import datetime, timezone
 import db
 from utils import C_INFO, C_SUCCESS, C_WARN, _err
@@ -18,12 +18,22 @@ MAX_CHAR_LEVEL = len(XP_TABLE)
 
 def xp_for_level(lvl: int) -> int:
     if lvl <= 1: return 0
-    return XP_TABLE[min(lvl-1, MAX_CHAR_LEVEL-1)]
+    return _xp_for_level_100(lvl)
 
 def level_from_xp(xp: int) -> int:
+    # Binary search for levels beyond table
+    if xp <= 0: return 1
+    # Check table first
     lvl = 1
     for i, t in enumerate(XP_TABLE):
         if xp >= t: lvl = i+1
+    # If at max table level, check extended
+    if lvl >= len(XP_TABLE):
+        for test_lvl in range(len(XP_TABLE)+1, 101):
+            if xp >= _xp_for_level_100(test_lvl):
+                lvl = test_lvl
+            else:
+                break
     return min(lvl, MAX_CHAR_LEVEL)
 
 def xp_to_next(xp: int) -> tuple[int,int]:
@@ -42,12 +52,23 @@ def calc_mana(spi: int, lvl: int) -> int:
     return max(10, spi*3 + lvl*5)
 
 # ── Dungeon tiers / difficulties ───────────────────────────────────
+# Manhwa calibrated:
+# Lv1-10 dungeon (Tier I): newbie mobs have 15 stats (class-transfer skeleton warrior)
+#   → cap at 150 for normal Lv10 monsters (goblin guard "compared to lv7 skeleton")
+# Lv11-25 dungeon (Tier II): lv14 goblin=800 STR, blood wolf=600 STR
+#   → cap at 1200 so boss gets 3000 (1200×2.5 boss mult matches Goblin King)
+# Lv26-50 dungeon (Tier III): elite territory, several-times stronger
+#   → cap at 5000
+# Lv51-75 (Tier IV): Late Stage, dangerous territory
+#   → cap at 15000
+# Lv76-100 (Tier V): Peak/Transcendent, divine-level territory
+#   → cap at 50000
 DUNGEON_TIERS = {
-    1:{"name":"Tier I",  "min_level":1,  "stat_cap":50},
-    2:{"name":"Tier II", "min_level":10, "stat_cap":100},
-    3:{"name":"Tier III","min_level":20, "stat_cap":180},
-    4:{"name":"Tier IV", "min_level":30, "stat_cap":300},
-    5:{"name":"Tier V",  "min_level":40, "stat_cap":500},
+    1:{"name":"Tier I",  "min_level":1,  "stat_cap":150},
+    2:{"name":"Tier II", "min_level":10, "stat_cap":1200},
+    3:{"name":"Tier III","min_level":20, "stat_cap":5000},
+    4:{"name":"Tier IV", "min_level":30, "stat_cap":15000},
+    5:{"name":"Tier V",  "min_level":40, "stat_cap":50000},
 }
 DIFFICULTIES = {
     "normal":    {"stat":1.0,"xp":1.0,"loot":1.0,"label":"⚔️ Normal",   "color":0x27ae60,"min_level":1},
@@ -76,16 +97,23 @@ RACE_BONUSES = {
 DND_RACES = list(RACE_BONUSES.keys())
 
 # ── Class stat growth per level ────────────────────────────────────
+# Manhwa: each level grants 10 stat points (20 after lv11)
+# Distributed by class specialty
+# Total per level: ~10 early (splits across stats), ~20 later
 CLASS_GROWTH = {
-    "Shadow":     {"str":2,"agi":4,"spi":1,"con":2,"vit":1},
-    "Warrior":    {"str":4,"agi":1,"spi":0,"con":3,"vit":3},
-    "Mage":       {"str":0,"agi":1,"spi":5,"con":1,"vit":1},
-    "Necromancer":{"str":1,"agi":1,"spi":4,"con":1,"vit":1},
-    "Archer":     {"str":2,"agi":4,"spi":1,"con":1,"vit":2},
-    "Gunman":     {"str":2,"agi":3,"spi":1,"con":2,"vit":2},
-    "Knight":     {"str":2,"agi":0,"spi":1,"con":4,"vit":4},
-    "Healer":     {"str":0,"agi":1,"spi":4,"con":2,"vit":2},
+    "Shadow":     {"str":2,"agi":5,"spi":1,"con":2,"vit":1},   # 11/level, AGI primary
+    "Warrior":    {"str":5,"agi":1,"spi":0,"con":4,"vit":4},   # 14/level, STR+CON
+    "Mage":       {"str":0,"agi":1,"spi":7,"con":1,"vit":2},   # 11/level, SPI primary
+    "Necromancer":{"str":1,"agi":1,"spi":6,"con":1,"vit":2},   # 11/level, SPI focused
+    "Archer":     {"str":3,"agi":5,"spi":1,"con":1,"vit":2},   # 12/level, AGI+STR
+    "Gunman":     {"str":3,"agi":4,"spi":1,"con":2,"vit":2},   # 12/level, AGI+STR
+    "Knight":     {"str":2,"agi":0,"spi":1,"con":5,"vit":5},   # 13/level, CON+VIT
+    "Healer":     {"str":0,"agi":1,"spi":5,"con":2,"vit":3},   # 11/level, SPI+VIT
 }
+
+def _get_level_growth_mult(char_level: int) -> float:
+    """Manhwa: stat gain doubles after level 11."""
+    return 2.0 if char_level > 10 else 1.0
 
 # ── DB helpers ─────────────────────────────────────────────────────
 async def get_char(gid, uid) -> dict | None:
@@ -352,11 +380,16 @@ class AllocView(discord.ui.View):
             WHERE guild_id=$7 AND user_id=$8
         """,self._pend["strength"],self._pend["constitution"],self._pend["agility"],
             self._pend["spirit"],self._pend["vitality"],used,self._gid,self._uid)
+        # Reload fresh char after update
         char=await get_char(self._gid,self._uid)
         sk=await get_skills(self._gid,self._uid); eq=await get_equipment(self._gid,self._uid)
         nv=RPGPanel(char,self._m,sk,eq,self._uid)
-        e=char_embed(char,self._m); e.title="✅ Stats Updated!"
-        await i.edit_original_response(embed=e,view=nv); self.stop()
+        # Show updated embed — HP/Mana recalculated in char_embed from live DB
+        e=char_embed(char,self._m)
+        e.title="✅ Stats Updated!"
+        e.color=0x2ecc71
+        await i.edit_original_response(embed=e,view=nv)
+        self.stop()
 
 class ClassSelectView(discord.ui.View):
     def __init__(self,uid,gid):
@@ -429,7 +462,31 @@ class RaceSelectView(discord.ui.View):
 
 # ── Cog ────────────────────────────────────────────────────────────
 class RPGStatsCog(commands.Cog, name="RPG"):
-    def __init__(self,bot): self.bot=bot
+    def __init__(self,bot):
+        self.bot=bot
+        self.hp_regen_task.start()
+
+    def cog_unload(self):
+        self.hp_regen_task.cancel()
+
+    @tasks.loop(minutes=2)
+    async def hp_regen_task(self):
+        """Regen HP and mana out of dungeon every 2 minutes."""
+        await self.bot.wait_until_ready()
+        try:
+            # Regen 5% HP and 10% Mana for all characters not currently in a dungeon
+            # (those in dungeon have last_explore within the last 5 min)
+            await db.pool.execute("""
+                UPDATE rpg_characters SET
+                    hp_current   = LEAST(hp_max,   hp_current   + GREATEST(1, hp_max   / 20)),
+                    mana_current = LEAST(mana_max, mana_current + GREATEST(2, mana_max / 10))
+                WHERE (guild_id, user_id) NOT IN (
+                    SELECT guild_id, user_id FROM work_log
+                    WHERE last_explore > NOW() - INTERVAL '5 minutes'
+                )
+            """)
+        except Exception as e:
+            print(f"HP regen task error: {e}")
 
     @commands.hybrid_group(name="rpg",description="RPG character system",invoke_without_command=True)
     async def rpg(self,ctx):

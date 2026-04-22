@@ -43,7 +43,7 @@ def load_gifs_pool(gifs_data: dict):
     """
     global _nsfw_pool
     try:
-        from airi.commands import NSFW_COMMANDS as _nsfw_set
+        from config import NSFW_COMMANDS as _nsfw_set
     except Exception:
         _nsfw_set = set()
     for raw_key, urls in gifs_data.items():

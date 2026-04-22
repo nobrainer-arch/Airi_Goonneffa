@@ -617,13 +617,19 @@ class AuctionHouseCog(commands.Cog, name="AuctionHouse"):
             if guild: await _refresh_listing(self.bot, r["guild_id"], r["id"], guild)
 
     async def cog_load(self):
+    # Schedule view restoration after bot is ready, don't block cog loading
+        self.bot.loop.create_task(self._restore_views())
+
+    async def _restore_views(self):
         await self.bot.wait_until_ready()
         rows = await db.pool.fetch("SELECT * FROM auction_house WHERE status='active' AND message_id IS NOT NULL")
         for r in rows:
             r = dict(r)
             has_bid = r.get("min_bid") is not None
-            v = ListingActionView(r["id"],r["guild_id"],r["seller_id"],has_bid,r["price"],r.get("min_bid"))
+            v = ListingActionView(r["id"], r["guild_id"], r["seller_id"], has_bid, r["price"], r.get("min_bid"))
             self.bot.add_view(v, message_id=r["message_id"])
+
+
 
     @commands.hybrid_command(name="ah", aliases=["auction","auctionhouse","market_ah"],
                              description="Auction House — buy, sell, and browse player listings")

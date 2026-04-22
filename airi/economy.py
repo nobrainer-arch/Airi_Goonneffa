@@ -220,7 +220,7 @@ class EconomyCog(commands.Cog, name="Economy"):
         await ctx.send(embed=e)
 
     # ── Balance ────────────────────────────────────────────────────
-    @commands.hybrid_command(name="balance", aliases=["bal","coins","wallet"], description="Check wallet balance")
+    @commands.hybrid_command(name="balance", aliases=["coins"], description="Check wallet balance")
     async def balance(self, ctx, member: discord.Member = None):
         target = member or ctx.author
         gid, uid = ctx.guild.id, target.id
@@ -382,40 +382,6 @@ class EconomyCog(commands.Cog, name="Economy"):
         e = discord.Embed(description=f"🎁 {ctx.author.mention} gifted **{amount:,}** 🪙 to {member.mention}!", color=C_SUCCESS)
         await send(embed=e)
 
-    # ── Shop ───────────────────────────────────────────────────────
-    @commands.hybrid_command(name="shop", description="Browse the item shop")
-    async def shop(self, ctx):
-        opts = [
-            discord.SelectOption(
-                label=v["name"][:50], value=k,
-                description=f"{v['price']:,} 🪙 — {v['desc'][:50]}"
-            ) for k, v in SHOP_ITEMS.items()
-        ]
-        sel = discord.ui.Select(placeholder="Select an item to buy…", options=opts[:25])
-        async def sel_cb(inter: discord.Interaction):
-            if inter.user.id != ctx.author.id: return await inter.response.send_message("Not for you.", ephemeral=True)
-            key  = sel.values[0]
-            item = SHOP_ITEMS[key]
-            class ConfirmView(discord.ui.View):
-                def __init__(self_): super().__init__(timeout=30)
-                @discord.ui.button(label=f"✅ Buy for {item['price']:,} 🪙", style=discord.ButtonStyle.success)
-                async def buy_it(self_, i2, btn):
-                    for b in self_.children: b.disabled = True
-                    await i2.response.edit_message(view=self_)
-                    await _do_buy(i2, key)
-                @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-                async def cancel(self_, i2, btn):
-                    for b in self_.children: b.disabled = True
-                    await i2.response.edit_message(content="Cancelled.", view=self_)
-            e2 = discord.Embed(title=f"Buy {item['name']}?", description=f"{item['desc']}\n\n**Cost:** {item['price']:,} 🪙", color=C_INFO)
-            await inter.response.send_message(embed=e2, view=ConfirmView(), ephemeral=True)
-        sel.callback = sel_cb
-        class V(discord.ui.View):
-            def __init__(self_): super().__init__(timeout=180); self_.add_item(sel)
-        e = discord.Embed(title="🛒 Item Shop", color=C_ECONOMY)
-        for k, v in SHOP_ITEMS.items():
-            e.add_field(name=f"{v['name']} — {v['price']:,} 🪙", value=v["desc"], inline=True)
-        await ctx.send(embed=e, view=V())
 
     # ── Buy (direct) ───────────────────────────────────────────────
     @commands.hybrid_command(name="buy", description="Buy a shop item")

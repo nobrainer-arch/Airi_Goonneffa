@@ -57,32 +57,33 @@ async def _build_embed(bot, ctx_or_inter, action_text: str, gif_url: str,
         return discord.Embed(description=action_text, color=C_SOCIAL)
 
     target_member = target_member or author
-    stats = await db.pool.fetchrow(
-        """SELECT hugs_received, kisses_received, pats_received,
-                  tease_count, slap_count, poke_count, bite_count,
-                  wave_count, cuddle_count, lick_count
-           FROM social WHERE guild_id=$1 AND user_id=$2""",
+    # Full social stats query
+    stats = await db.pool.fetchrow("""
+        SELECT hugs_received, kisses_received, pats_received,
+               tease_count, slap_count, poke_count, bite_count,
+               wave_count, cuddle_count, lick_count
+        FROM social WHERE guild_id=$1 AND user_id=$2""",
         gid, target_member.id
     )
-    # Map command name → (stat column, emoji, label)
+    # Map command → (col, emoji, label)
     CMD_COUNTER = {
-        "hug":    ("hugs_received",    "🤗", "hugs"),
-        "kiss":   ("kisses_received",  "💋", "kisses"),
-        "pat":    ("pats_received",    "🤚", "pats"),
-        "tease":  ("tease_count",      "😏", "teases"),
-        "slap":   ("slap_count",       "✋", "slaps"),
-        "poke":   ("poke_count",       "👉", "pokes"),
-        "bite":   ("bite_count",       "😈", "bites"),
-        "wave":   ("wave_count",       "👋", "waves"),
-        "cuddle": ("cuddle_count",     "🤗", "cuddles"),
-        "lick":   ("lick_count",       "👅", "licks"),
+        "hug":    ("hugs_received",   "🤗", "hugs"),
+        "kiss":   ("kisses_received", "💋", "kisses"),
+        "pat":    ("pats_received",   "🤚", "pats"),
+        "tease":  ("tease_count",     "😏", "teases"),
+        "slap":   ("slap_count",      "✋", "slaps"),
+        "poke":   ("poke_count",      "👉", "pokes"),
+        "bite":   ("bite_count",      "😈", "bites"),
+        "wave":   ("wave_count",      "👋", "waves"),
+        "cuddle": ("cuddle_count",    "🫂", "cuddles"),
+        "lick":   ("lick_count",      "👅", "licks"),
     }
     extra = ""
     if stats and cmd_name in CMD_COUNTER and target_member != author:
         col, emoji, word = CMD_COUNTER[cmd_name]
-        count = int((stats or {}).get(col, 0) or 0)
-        # +1 because this action just happened (counter incremented after embed build)
-        extra = f"\n{emoji} **{target_member.display_name}** has received **{count+1:,}** {word}."
+        # Count is AFTER increment (the counter runs after embed build, so +1 here)
+        count = int((stats or {}).get(col, 0) or 0) + 1
+        extra = f"\n{emoji} **{target_member.display_name}** has received **{count:,}** {word}."
 
     title = await db.pool.fetchval(
         "SELECT active_title FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
@@ -189,10 +190,14 @@ class RecipientSelect(discord.ui.UserSelect):
             from airi.gender import get_gender
             ag = await get_gender(str(self._author)) or "u"
 
-            # Acknowledge the interaction early so followups work consistently.
-            await interaction.response.defer(ephemeral=True)
+            # Edit the original picker message with the result embed
+            # so no ephemeral spam
+            await interaction.response.defer()
 
             sent_any = False
+            first_embed = None
+            first_view  = None
+
             for member in self.values:
                 if member.bot:
                     await interaction.followup.send("❌ Bots can't be targeted.", ephemeral=True)
@@ -209,6 +214,8 @@ class RecipientSelect(discord.ui.UserSelect):
                     await interaction.followup.send(f"**{member.display_name}** blocked you from RP.", ephemeral=True)
                     continue
 
+                await _increment_action_counter(interaction, self._cmd, member)
+
                 tg      = await get_gender(str(member.id)) or "u"
                 raw     = _get_action_text(self._cmd, ag, tg)
                 action  = raw.format(author=interaction.user.display_name, target=member.mention)
@@ -217,17 +224,25 @@ class RecipientSelect(discord.ui.UserSelect):
                     await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
                     continue
 
-                e = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user, target_member=member)
-                view = BackView(self._cmd, member.id, self._author, self._bot) if self._cmd in config.BACK_ACTIONS else None
-                if view:
-                    await interaction.followup.send(embed=e, view=view)
+                e    = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user, target_member=member)
+                bv   = BackView(self._cmd, member.id, self._author, self._bot) if self._cmd in config.BACK_ACTIONS else None
+
+                if first_embed is None:
+                    # Replace picker msg with first result
+                    first_embed = e; first_view = bv
                 else:
-                    await interaction.followup.send(embed=e)
+                    # Additional targets → new message
+                    if bv: await interaction.followup.send(embed=e, view=bv)
+                    else:  await interaction.followup.send(embed=e)
                 sent_any = True
 
-                await _increment_action_counter(interaction, self._cmd, member)
-
-            if not sent_any:
+            if first_embed:
+                try:
+                    await interaction.edit_original_response(embed=first_embed, view=first_view)
+                except Exception:
+                    if first_view: await interaction.followup.send(embed=first_embed, view=first_view)
+                    else:          await interaction.followup.send(embed=first_embed)
+            elif not sent_any:
                 await interaction.followup.send("No valid targets could be processed.", ephemeral=True)
         except Exception as err:
             print(f"RecipientSelect callback error for {self._cmd}: {err}")

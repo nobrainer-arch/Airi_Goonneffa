@@ -20,10 +20,24 @@ ITEMS: dict[str, dict] = {
     "coins_medium":   {"name": "💰 Coin Pouch (medium)",  "rarity": "rare",      "tradable": False},
     "coins_large":    {"name": "💰 Coin Pouch (large)",   "rarity": "epic",      "tradable": False},
     "coins_jackpot":  {"name": "💎 Coin Jackpot",         "rarity": "mythic",    "tradable": False},
+    # RPG consumables from market/dungeon drops
+    "hp_potion_s":    {"name": "🧪 Small HP Potion",       "rarity": "common",    "tradable": True},
+    "hp_potion_m":    {"name": "🧪 Medium HP Potion",      "rarity": "uncommon",  "tradable": True},
+    "hp_potion_l":    {"name": "🧪 Large HP Potion",       "rarity": "rare",      "tradable": True},
+    "mana_potion":    {"name": "💙 Mana Potion",            "rarity": "uncommon",  "tradable": True},
+    "antidote":       {"name": "💊 Antidote",               "rarity": "common",    "tradable": True},
+    "elixir":         {"name": "⚡ Elixir of Strength",    "rarity": "rare",      "tradable": True},
+    "revival_orb":    {"name": "💫 Revival Orb",           "rarity": "epic",      "tradable": True},
+    "luck_charm":     {"name": "🍀 Lucky Charm",           "rarity": "rare",      "tradable": True},
+    "speed_boots":    {"name": "👢 Boots of Swiftness",    "rarity": "rare",      "tradable": True},
+    "mage_robe":      {"name": "🔮 Arcane Robe",           "rarity": "rare",      "tradable": True},
+    "shadow_cloak":   {"name": "🌑 Shadow Cloak",          "rarity": "rare",      "tradable": True},
+    "iron_shield":    {"name": "🛡️ Iron Shield",           "rarity": "uncommon",  "tradable": True},
+    "cd_remover":     {"name": "⏱️ CD Remover",            "rarity": "epic",      "tradable": True},
 }
 
 RARITY_STAR = {
-    "common": "⬜", "rare": "🟦", "epic": "🟪",
+    "common": "⬜", "uncommon": "🟩", "rare": "🟦", "epic": "🟪",
     "legendary": "🟨", "mythic": "🟥",
 }
 

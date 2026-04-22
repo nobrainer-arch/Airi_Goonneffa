@@ -31,6 +31,13 @@ SOLO_COMMANDS = {
     "peek", "watch", "lol", "bored", "rage", "fap", "shock",
 }
 
+NSFW_COMMANDS = {
+    "fuck","bfuck","dickride","anal","bathroomfuck","bondage","blowjob",
+    "kuni","pussyeat","lickdick","titjob","threesome","gangbang","fap",
+    "grabbutts","grabboobs","grind","feet","finger","69","cum",
+    
+}
+
 MULTI_TARGET_COMMANDS = {
     "gangbang":  3,
     "threesome": 2,
