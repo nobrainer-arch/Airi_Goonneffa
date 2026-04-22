@@ -20,7 +20,7 @@ class EconomyHub(commands.Cog, name="EconomyHub"):
     def __init__(self, bot): self.bot = bot
 
     @commands.hybrid_command(
-        name="economy", aliases=["eco","wallet","bal","balance","daily","work","crime","pay","give"],
+        name="economy", aliases=["eco"],
         description="Economy hub — balance, daily, work, pay, give"
     )
     async def economy(self, ctx, member: discord.Member = None, amount: int = None):
@@ -44,7 +44,7 @@ class SocialHub(commands.Cog, name="SocialHub"):
     def __init__(self, bot): self.bot = bot
 
     @commands.hybrid_command(
-        name="social", aliases=["profile","pf","rep","waifu","mywaifu","claim","myrel"],
+        name="social", aliases=["pro"],
         description="Social hub — profile, rep, waifu, relationships"
     )
     async def social(self, ctx, member: discord.Member = None):
@@ -63,7 +63,7 @@ class LeaderboardHub(commands.Cog, name="LeaderboardHub"):
     def __init__(self, bot): self.bot = bot
 
     @commands.hybrid_command(
-        name="lb", aliases=["leaderboard","top","rank"],
+        name="lb", aliases=["top"],
         description="Server leaderboards — XP, coins, hugs, RPG power, and more"
     )
     async def lb(self, ctx, category: str = "xp"):

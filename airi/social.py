@@ -414,7 +414,7 @@ class SocialCog(commands.Cog, name="Social"):
         await ctx.send(embed=discord.Embed(description=status, color=C_SOCIAL), view=ToggleView(), ephemeral=True)
 
     # ── Leaderboard ───────────────────────────────────────────────
-    @commands.hybrid_command(name="leaderboard", aliases=["lb","top"], description="View server leaderboards")
+    @commands.hybrid_command(name="leaderboard", aliases=[], description="View server leaderboards")
     async def leaderboard(self, ctx, category: str = "xp"):
         cat = category.lower()
         if cat not in LB_CATEGORIES: cat = "xp"
