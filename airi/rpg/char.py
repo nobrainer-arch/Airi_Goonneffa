@@ -320,6 +320,51 @@ class RPGPanel(discord.ui.View):
         v = AllocView(self._c, self._m, i.guild_id, parent=self)
         await i.response.edit_message(embed=v._embed(), view=v)
 
+    @discord.ui.button(label="⚔️ Dungeon",  style=discord.ButtonStyle.danger,    row=1)
+    async def dungeon_btn(self,i,b):
+        # Trigger the dungeon command in the same channel
+        await i.response.defer()
+        cog = i.client.cogs.get("Dungeon")
+        if not cog:
+            return await i.edit_original_response(
+                embed=discord.Embed(description="Dungeon module unavailable.", color=0xe74c3c), view=self)
+        class FC:
+            guild=i.guild; author=i.user; channel=i.channel; bot=i.client
+            async def send(self_,*a,**kw):
+                kw.pop("delete_after",None)
+                return await i.channel.send(*a,**kw)
+        await cog.dungeon(FC())
+
+    @discord.ui.button(label="🛒 Shop",     style=discord.ButtonStyle.secondary, row=1)
+    async def shop_btn(self,i,b):
+        await i.response.defer()
+        from airi.rpg.shop import ShopView
+        player_class = self._c.get("class")
+        shop_view = ShopView(
+            type("FCtx",(),{"author":i.user,"guild":i.guild,"channel":i.channel,"bot":i.client})(),
+            player_class
+        )
+        load_e = discord.Embed(title="🔄 Loading Shop...", description="Fetching from D&D 5e API...", color=0x3498db)
+        # Send as new message so dungeon panel stays intact
+        msg = await i.channel.send(embed=load_e)
+        await shop_view._load()
+        shop_view._rebuild()
+        await msg.edit(embed=shop_view._embed(), view=shop_view)
+
+    @discord.ui.button(label="⚔️ Guild",    style=discord.ButtonStyle.secondary, row=2)
+    async def guild_btn(self,i,b):
+        await i.response.defer()
+        cog = i.client.cogs.get("GuildSystem")
+        if not cog:
+            return await i.edit_original_response(
+                embed=discord.Embed(description="Guild module unavailable.", color=0xe74c3c), view=self)
+        class FC:
+            guild=i.guild; author=i.user; channel=i.channel; bot=i.client
+            async def send(self_,*a,**kw):
+                kw.pop("delete_after",None)
+                return await i.channel.send(*a,**kw)
+        await cog.guild_cmd(FC())
+
 class _Back(discord.ui.View):
     def __init__(self,parent,home): super().__init__(timeout=300); self._p=parent; self._h=home
     @discord.ui.button(label="◀ Back",style=discord.ButtonStyle.secondary)

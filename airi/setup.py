@@ -225,28 +225,18 @@ class SetupStepView(discord.ui.View):
         e.set_footer(text="Returning to menu…")
         await interaction.response.edit_message(embed=e, view=self)
 
-        # Auto-return to home — use followup.edit instead of interaction.edit_original_response
-        # because interaction tokens expire after 3 seconds
+        # Auto-return to home after brief pause
         import asyncio
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(1.5)
         self._parent._results = await _load_results(gid)
         self._parent._build_select()
         try:
-            # Try both methods
             await interaction.edit_original_response(
                 embed=_home_embed(self._ctx.guild, self._parent._results),
                 view=self._parent,
             )
         except Exception:
-            # Fallback: send new followup (the old message is already edited to show confirm)
-            try:
-                home_msg = await interaction.followup.send(
-                    embed=_home_embed(self._ctx.guild, self._parent._results),
-                    view=self._parent,
-                    wait=True,
-                )
-            except Exception:
-                pass
+            pass
 
     async def _on_skip(self, interaction: discord.Interaction):
         if interaction.user.id != self._ctx.author.id:
@@ -259,7 +249,7 @@ class SetupStepView(discord.ui.View):
             child.disabled = True
         await interaction.response.edit_message(embed=e, view=self)
         import asyncio
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.0)
         self._parent._results = await _load_results(self._ctx.guild.id)
         self._parent._build_select()
         try:
@@ -268,13 +258,7 @@ class SetupStepView(discord.ui.View):
                 view=self._parent,
             )
         except Exception:
-            try:
-                await interaction.followup.send(
-                    embed=_home_embed(self._ctx.guild, self._parent._results),
-                    view=self._parent,
-                )
-            except Exception:
-                pass
+            pass
 
     async def _on_back(self, interaction: discord.Interaction):
         if interaction.user.id != self._ctx.author.id:

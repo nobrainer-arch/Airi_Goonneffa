@@ -220,7 +220,7 @@ class EconomyCog(commands.Cog, name="Economy"):
         await ctx.send(embed=e)
 
     # ── Balance ────────────────────────────────────────────────────
-    @commands.hybrid_command(name="balance", aliases=["coins"], description="Check wallet balance")
+    @commands.hybrid_command(name="balance", aliases=["bal","coins","wallet"], description="Check wallet balance")
     async def balance(self, ctx, member: discord.Member = None):
         target = member or ctx.author
         gid, uid = ctx.guild.id, target.id

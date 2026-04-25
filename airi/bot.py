@@ -189,7 +189,7 @@ async def setup_hook():
     ]:
         await bot.add_cog(cog_cls(bot))
 
-    setup_commands(bot, cmd_meta)
+    setup_commands(bot)  # auto-reads from actio.py
     print("✅ All cogs loaded")
 
 bot.setup_hook = setup_hook

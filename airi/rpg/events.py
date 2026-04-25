@@ -223,7 +223,7 @@ class EventsCog(commands.Cog, name="Events"):
     def cog_unload(self):
         self.auto_spawn.cancel()
 
-    @tasks.loop(minutes=45)
+    @tasks.loop(minutes=1440)
     async def auto_spawn(self):
         """Auto-spawn events every ~45 min in each active server."""
         await self.bot.wait_until_ready()

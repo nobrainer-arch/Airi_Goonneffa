@@ -1,639 +1,718 @@
-# airi/auction_house.py — Full Agora-style Auction House
-# Single /ah command, UI does everything: list → browse → buy/bid
-# Auto-categorizes items. Clean channel — only listing embeds + ephemeral actions.
+# airi/auction_house.py
+# Full button-driven AH. AH channel stays clean — only listing embeds.
+# Bids/confirmations are ephemeral. Only completed sales post to txn channel.
 import discord
 from discord.ext import commands
-from discord.ext import tasks
-from datetime import datetime, timezone, timedelta
-import asyncio, random
+from datetime import datetime, timedelta, timezone, timezone
+import asyncio
 import db
-from utils import _err, C_ECONOMY, C_WARN, C_SUCCESS, C_ERROR
+from utils import _err, C_GACHA, C_ECONOMY, C_WARN, C_SUCCESS, C_ERROR
+from airi.guild_config import check_channel, get_market_channel, get_txn_channel
 from airi.economy import add_coins, get_balance
-from airi.guild_config import get_market_channel, check_channel
+from airi.inventory import ITEMS, RARITY_STAR, add_item, remove_item, get_quantity, get_inventory
 
-AH_FEE       = 0.05      # 5% seller fee
-AH_EXPIRE_H  = 48        # listing expires in 48h
-AH_MAX_SLOTS = 5         # max active listings per user
-PAGE_SIZE    = 5         # listings per browse page
+AH_FEE       = 0.05
+AH_EXPIRE_H  = 48
+AH_MAX_SLOTS = 5
+PAGE_SIZE    = 6   # listings per page
 
-# ── Item categories (auto-detect from item_key prefix) ──────────────
-CATEGORIES = {
-    "weapon":    ("⚔️ Weapons",     0xe74c3c),
-    "armor":     ("🛡️ Armor",       0x95a5a6),
-    "potion":    ("🧪 Potions",      0x2ecc71),
-    "accessory": ("💍 Accessories",  0x9b59b6),
-    "spell":     ("📚 Spells",       0x3498db),
-    "material":  ("🪨 Materials",    0x7f8c8d),
-    "food":      ("🍖 Food",         0xf39c12),
-    "other":     ("📦 Other",        0x34495e),
-}
-
-def _auto_category(item_key: str, item_name: str) -> str:
-    k = item_key.lower(); n = item_name.lower()
-    if any(w in k or w in n for w in ("sword","axe","dagger","bow","gun","staff","wand","spear","blade","weapon")): return "weapon"
-    if any(w in k or w in n for w in ("armor","shield","cloak","robe","mail","plate","leather","helm","boots","gloves","chestplate")): return "armor"
-    if any(w in k or w in n for w in ("potion","antidote","elixir","tonic","vial","brew","herb")): return "potion"
-    if any(w in k or w in n for w in ("ring","amulet","charm","necklace","bracelet","accessory","lucky","luck","pendant")): return "accessory"
-    if any(w in k or w in n for w in ("spell","scroll","tome","book","grimoire","magic","fireball","heal","ward")): return "spell"
-    if any(w in k or w in n for w in ("ore","stone","crystal","gem","wood","leather","cloth","ingot","shard","fragment","material")): return "material"
-    if any(w in k or w in n for w in ("food","meal","bread","fish","meat","mushroom","fruit","berry")): return "food"
-    return "other"
-
-RARITY_STAR = {"common":"⬜","uncommon":"🟩","rare":"🟦","epic":"🟣","legendary":"🟠","mythic":"🔴"}
-RARITY_COLOR= {"common":0x808080,"uncommon":0x27ae60,"rare":0x2980b9,"epic":0x8e44ad,"legendary":0xf39c12,"mythic":0xe74c3c}
+def _utc_naive(ts):
+    if ts is None:
+        return None
+    if hasattr(ts, "tzinfo") and ts.tzinfo is not None:
+        return ts.astimezone(timezone.utc).replace(tzinfo=None)
+    return ts
 
 
-# ── Embed builders ───────────────────────────────────────────────────
-def _listing_embed(row: dict, guild: discord.Guild, highlight: str = "") -> discord.Embed:
-    cat_key  = row.get("category","other")
-    cat_name, cat_color = CATEGORIES.get(cat_key, CATEGORIES["other"])
-    star     = RARITY_STAR.get(row.get("rarity","common"),"⬜")
-    rarity_c = RARITY_COLOR.get(row.get("rarity","common"),C_ECONOMY)
-    seller   = guild.get_member(row["seller_id"])
-    sname    = seller.display_name if seller else f"<@{row['seller_id']}>"
+async def _count_active(guild_id, user_id):
+    return await db.pool.fetchval(
+        "SELECT COUNT(*) FROM auction_house WHERE guild_id=$1 AND seller_id=$2 AND status='active'",
+        guild_id, user_id
+    ) or 0
 
-    color = rarity_c
-    if highlight == "new_bid": color = 0x3498db
-    if highlight == "sold":    color = 0x2ecc71
-    if highlight == "expired": color = 0x808080
 
-    has_bid  = row.get("min_bid") is not None
-    cur_bid  = row.get("current_bid")
-    bidder_id= row.get("current_bidder_id")
-    bidder   = guild.get_member(bidder_id) if bidder_id else None
-    expires  = row.get("expires_at")
-    exp_aware= expires.replace(tzinfo=timezone.utc) if expires and not expires.tzinfo else expires
+def _listing_embed(row, guild) -> discord.Embed:
+    """Build the canonical embed for one active listing."""
+    star   = RARITY_STAR.get(row["rarity"], "⬜")
+    seller = guild.get_member(row["seller_id"])
+    sname  = seller.display_name if seller else f"ID {row['seller_id']}"
+    expires_txt = ""
+    if row["expires_at"]:
+        h = max(0, int((row["expires_at"] - datetime.now(timezone.utc)).total_seconds() // 3600))
+        expires_txt = f"\n⏰ Expires in **{h}h**"
 
-    qty = row.get("quantity",1)
-
-    lines = [
-        f"**Seller:** {sname}  ·  **Category:** {cat_name}",
-        f"**Rarity:** {star} {row.get('rarity','common').title()}",
-    ]
+    has_bid = row.get("min_bid") is not None
     if has_bid:
-        if cur_bid:
-            lines.append(f"📈 **Top Bid:** {cur_bid:,} 🪙 by {bidder.display_name if bidder else '?'}")
-        else:
-            lines.append(f"📈 **Starting Bid:** {row['min_bid']:,} 🪙")
-        lines.append(f"💰 **Buyout:** {row['price']:,} 🪙")
+        cur  = row.get("current_bid") or row["min_bid"]
+        bidder_id = row.get("current_bidder_id")
+        bidder = guild.get_member(bidder_id) if bidder_id else None
+        bid_line = (
+            f"\n💸 **Current bid:** {cur:,} coins"
+            + (f" by {bidder.display_name}" if bidder else "")
+        )
+        price_line = f"💰 **Buyout:** {row['price']:,} coins"
     else:
-        lines.append(f"💰 **Price:** {row['price']:,} 🪙")
-    if exp_aware:
-        lines.append(f"⏰ **Expires:** {discord.utils.format_dt(exp_aware,'R')}")
-    if row.get("status","active") != "active":
-        status_txt = {"sold":"✅ SOLD","expired":"⏰ EXPIRED","cancelled":"❌ CANCELLED"}.get(row["status"],"?")
-        lines.append(f"\n**{status_txt}**")
+        bid_line   = ""
+        price_line = f"💰 **Price:** {row['price']:,} coins"
 
     e = discord.Embed(
-        title=f"{star} #{row['id']} — {row['item_name']}" + (f" ×{qty}" if qty>1 else ""),
-        description="\n".join(lines),
-        color=color,
+        title=f"🏪 #{row['id']} — {star} {row['item_name']} ×{row['quantity']}",
+        description=(
+            f"{price_line}{bid_line}\n"
+            f"👤 Seller: **{sname}**{expires_txt}"
+        ),
+        color=C_GACHA,
     )
-    e.set_footer(text=f"Listing #{row['id']} · {int(AH_FEE*100)}% tax on sale · /ah for full auction house")
+    e.set_footer(text=f"ID #{row['id']} · Rarity: {row['rarity'].title()}")
     return e
 
-def _browse_embed(rows: list[dict], guild: discord.Guild, page: int,
-                   total: int, category: str = "all") -> discord.Embed:
-    total_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
-    cat_name, cat_color = CATEGORIES.get(category, ("🏛️ All Items", C_ECONOMY))
-    if category == "all": cat_name = "🏛️ All Items"
 
+# ── Bid Modal ─────────────────────────────────────────────────────
+class BidModal(discord.ui.Modal, title="Place a Bid"):
+    amount_input = discord.ui.TextInput(
+        label="Your bid amount (coins)",
+        placeholder="Must be higher than current bid",
+        min_length=1,
+        max_length=10,
+        required=True,
+    )
+
+    def __init__(self, listing_id: int, guild_id: int):
+        super().__init__()
+        self._lid  = listing_id
+        self._gid  = guild_id
+
+    async def on_submit(self, interaction: discord.Interaction):
+        raw = self.amount_input.value.strip().replace(",", "")
+        if not raw.isdigit():
+            await interaction.response.send_message("❌ Enter a valid number.", ephemeral=True)
+            return
+
+        amount = int(raw)
+        uid    = interaction.user.id
+        gid    = self._gid
+
+        async with db.pool.acquire() as conn:
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT * FROM auction_house WHERE id=$1 AND guild_id=$2 AND status='active' FOR UPDATE",
+                    self._lid, gid
+                )
+                if not row:
+                    await interaction.response.send_message("❌ Listing no longer active.", ephemeral=True)
+                    return
+                if row["seller_id"] == uid:
+                    await interaction.response.send_message("❌ You can't bid on your own listing.", ephemeral=True)
+                    return
+                min_next = (row.get("current_bid") or row.get("min_bid") or row["price"]) + 1
+                if amount < min_next:
+                    await interaction.response.send_message(
+                        f"❌ Minimum bid is **{min_next:,} coins**.", ephemeral=True
+                    )
+                    return
+                bal = await conn.fetchval(
+                    "SELECT balance FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
+                ) or 0
+                if bal < amount:
+                    await interaction.response.send_message(
+                        f"❌ You need **{amount:,}** but have **{bal:,}** coins.", ephemeral=True
+                    )
+                    return
+
+                # Refund previous bidder if any
+                prev_bidder = row.get("current_bidder_id")
+                prev_bid    = row.get("current_bid") or 0
+                if prev_bidder and prev_bid:
+                    await conn.execute(
+                        "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+                        prev_bid, gid, prev_bidder
+                    )
+
+                # Hold new bid
+                await conn.execute(
+                    "UPDATE economy SET balance=balance-$1 WHERE guild_id=$2 AND user_id=$3",
+                    amount, gid, uid
+                )
+                await conn.execute(
+                    "UPDATE auction_house SET current_bid=$1, current_bidder_id=$2 WHERE id=$3",
+                    amount, uid, self._lid
+                )
+                await conn.execute(
+                    "INSERT INTO ah_bids (listing_id, guild_id, bidder_id, amount) VALUES ($1,$2,$3,$4)",
+                    self._lid, gid, uid, amount
+                )
+
+        # Update the listing embed in the AH channel
+        await _refresh_listing_msg(interaction.client, gid, self._lid, interaction.guild)
+        await interaction.response.send_message(
+            f"✅ Bid of **{amount:,} coins** placed! You'll be refunded if outbid.", ephemeral=True
+        )
+
+
+# ── Buyout Confirm View ───────────────────────────────────────────
+class BuyoutConfirmView(discord.ui.View):
+    def __init__(self, listing_id: int, guild_id: int, price: int):
+        super().__init__(timeout=60)
+        self._lid   = listing_id
+        self._gid   = guild_id
+        self._price = price
+
+    @discord.ui.button(label="✅ Confirm Buyout", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+        uid = interaction.user.id
+        gid = self._gid
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(content="Processing...", view=self)
+        await _execute_buyout(interaction, gid, self._lid, uid)
+
+    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        for item in self.children: item.disabled = True
+        await interaction.response.edit_message(content="Cancelled.", view=self)
+
+
+# ── Per-listing Action View ───────────────────────────────────────
+class ListingActionView(discord.ui.View):
+    def __init__(self, listing_id: int, guild_id: int, seller_id: int,
+                 has_bidding: bool, price: int, min_bid: int | None):
+        super().__init__(timeout=None)  # Persistent
+        self._lid         = listing_id
+        self._gid         = guild_id
+        self._seller_id   = seller_id
+        self._has_bidding = has_bidding
+        self._price       = price
+        self._min_bid     = min_bid
+        # Set stable custom_ids so views survive restarts
+        self.bid_btn.custom_id = f"ah_bid_{listing_id}"
+        self.buyout_btn.custom_id = f"ah_buy_{listing_id}"
+        self.stop_btn.custom_id = f"ah_stop_{listing_id}"
+
+    @discord.ui.button(label="💸 Bid", style=discord.ButtonStyle.primary)
+    async def bid_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._has_bidding:
+            await interaction.response.send_message(
+                "This listing is buyout only.", ephemeral=True
+            )
+            return
+        if interaction.user.id == self._seller_id:
+            await interaction.response.send_message("You can't bid on your own listing.", ephemeral=True)
+            return
+        modal = BidModal(self._lid, self._gid)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="💰 Buyout", style=discord.ButtonStyle.success)
+    async def buyout_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id == self._seller_id:
+            await interaction.response.send_message(
+                "Use the 🔨 Stop button to remove your listing.", ephemeral=True
+            )
+            return
+        view = BuyoutConfirmView(self._lid, self._gid, self._price)
+        await interaction.response.send_message(
+            f"Confirm buyout for **{self._price:,} coins**?",
+            view=view, ephemeral=True
+        )
+
+    @discord.ui.button(label="🔨 Stop", style=discord.ButtonStyle.danger)
+    async def stop_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self._seller_id:
+            await interaction.response.send_message(
+                "Only the seller can stop a listing.", ephemeral=True
+            )
+            return
+        # Confirm
+        class StopConfirmView(discord.ui.View):
+            def __init__(self_, lid, gid, sid):
+                super().__init__(timeout=30)
+                self_._lid = lid; self_._gid = gid; self_._sid = sid
+
+            @discord.ui.button(label="Yes, cancel listing", style=discord.ButtonStyle.danger)
+            async def yes(self_, inter, btn):
+                for i in self_.children: i.disabled = True
+                await inter.response.edit_message(view=self_)
+                await _cancel_listing(inter, self_._gid, self_._lid, self_._sid)
+
+            @discord.ui.button(label="Keep listing", style=discord.ButtonStyle.secondary)
+            async def no(self_, inter, btn):
+                for i in self_.children: i.disabled = True
+                await inter.response.edit_message(content="Cancelled.", view=self_)
+
+        view = StopConfirmView(self._lid, self._gid, self._seller_id)
+        await interaction.response.send_message("Cancel your listing and get the item back?", view=view, ephemeral=True)
+
+
+# ── Helpers ───────────────────────────────────────────────────────
+async def _refresh_listing_msg(bot, gid: int, lid: int, guild):
+    """Reload listing from DB and edit the pinned message."""
+    row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1", lid)
+    if not row: return
+    ch_id  = row.get("channel_id")
+    msg_id = row.get("message_id")
+    if not ch_id or not msg_id: return
+    ch = bot.get_channel(ch_id)
+    if not ch: return
+    try:
+        msg = await ch.fetch_message(msg_id)
+        if row["status"] == "active":
+            has_bid = row.get("min_bid") is not None
+            view = ListingActionView(lid, gid, row["seller_id"], has_bid,
+                                     row["price"], row.get("min_bid"))
+            await msg.edit(embed=_listing_embed(row, guild), view=view)
+        else:
+            status_map = {"sold": "✅ Sold", "expired": "⏰ Expired", "cancelled": "❌ Cancelled"}
+            e = _listing_embed(row, guild)
+            e.colour = C_WARN
+            e.title  = status_map.get(row["status"], row["status"]) + " — " + e.title
+            await msg.edit(embed=e, view=None)
+    except Exception:
+        pass
+
+
+async def _post_txn(bot, gid: int, guild, row, buyer: discord.Member | None,
+                    paid: int, seller_got: int, mode: str):
+    """Post a final sale notice to the txn channel."""
+    ch_id = await get_txn_channel(gid)
+    if not ch_id: return
+    ch = bot.get_channel(ch_id)
+    if not ch: return
+    seller = guild.get_member(row["seller_id"])
+    sname  = seller.display_name if seller else f"<@{row['seller_id']}>"
+    bname  = buyer.display_name  if buyer  else "Unknown"
     e = discord.Embed(
-        title=f"🏛️ Auction House — {cat_name}",
-        description=f"Page **{page+1}**/{total_pages}  ·  {total} active listing(s)\n\u200b",
-        color=cat_color if category != "all" else C_ECONOMY,
+        title=f"{'🔨 Sold' if mode == 'buyout' else '⚡ Bid Won'} — #{row['id']} {row['item_name']}",
+        description=(
+            f"**Buyer:** {bname}  |  **Seller:** {sname}\n"
+            f"**Paid:** {paid:,} coins  |  **Seller received:** {seller_got:,} coins\n"
+            f"*(5% fee deducted)*"
+        ),
+        color=C_ECONOMY,
         timestamp=datetime.now(timezone.utc),
     )
-    for r in rows:
-        star  = RARITY_STAR.get(r.get("rarity","common"),"⬜")
-        seller = guild.get_member(r["seller_id"])
-        sname  = seller.display_name if seller else f"<@{r['seller_id']}>"
-        has_bid = r.get("min_bid") is not None
-        cur_bid = r.get("current_bid")
-        exp = r.get("expires_at")
-        exp_aware = exp.replace(tzinfo=timezone.utc) if exp and not exp.tzinfo else exp
-
-        price_txt = f"{r['price']:,} 🪙"
-        bid_txt   = f"  ·  Top bid: {cur_bid:,}" if cur_bid else (f"  ·  Bid from {r['min_bid']:,}" if has_bid else "")
-        qty = r.get("quantity",1)
-        cat_icon = CATEGORIES.get(r.get("category","other"),("📦",""))[0]
-
-        e.add_field(
-            name=f"{star} {cat_icon} **#{r['id']}** {r['item_name']}" + (f" ×{qty}" if qty>1 else ""),
-            value=(
-                f"💰 {price_txt}{bid_txt}\n"
-                f"Seller: {sname}  ·  Expires {discord.utils.format_dt(exp_aware,'R') if exp_aware else '?'}"
-            ),
-            inline=False,
-        )
-    if not rows:
-        e.description = "No listings in this category. Use **Sell** to list an item!"
-    e.set_footer(text="Use the dropdown to filter by category · ◀▶ to browse")
-    return e
+    await ch.send(embed=e)
 
 
-# ── Bid Modal ────────────────────────────────────────────────────────
-class BidModal(discord.ui.Modal, title="Place a Bid"):
-    amount = discord.ui.TextInput(label="Your bid (coins)", required=True)
-    def __init__(self, lid: int, gid: int, min_bid: int):
-        super().__init__()
-        self._lid = lid; self._gid = gid
-        self.amount.placeholder = f"Minimum: {min_bid:,}"
-    async def on_submit(self, inter: discord.Interaction):
-        await inter.response.defer(ephemeral=True)
-        raw = self.amount.value.strip().replace(",","")
-        if not raw.isdigit():
-            return await inter.followup.send("❌ Enter a valid number.",ephemeral=True)
-        await _place_bid(inter, self._gid, self._lid, inter.user.id, int(raw))
-
-class SellModal(discord.ui.Modal, title="List Item for Sale"):
-    price_in = discord.ui.TextInput(label="Buyout price (coins)", required=True, placeholder="e.g. 2500")
-    qty_in   = discord.ui.TextInput(label="Quantity", required=False, default="1")
-    bid_in   = discord.ui.TextInput(label="Starting bid (leave blank = no auction)", required=False)
-    def __init__(self, item_key: str, item_name: str, rarity: str, gid: int, uid: int):
-        super().__init__()
-        self._key=item_key; self._name=item_name; self._rarity=rarity
-        self._gid=gid; self._uid=uid
-    async def on_submit(self, inter: discord.Interaction):
-        await inter.response.defer(ephemeral=True)
-        raw_p = self.price_in.value.strip().replace(",","")
-        raw_q = self.qty_in.value.strip() or "1"
-        raw_b = self.bid_in.value.strip().replace(",","")
-        if not raw_p.isdigit():
-            return await inter.followup.send("❌ Invalid price.",ephemeral=True)
-        price = int(raw_p); qty = int(raw_q) if raw_q.isdigit() else 1
-        min_bid = int(raw_b) if raw_b.isdigit() else None
-        if min_bid and min_bid >= price:
-            return await inter.followup.send("❌ Starting bid must be less than buyout.",ephemeral=True)
-        await _post_listing(inter, self._gid, self._uid, self._key, self._name,
-                            self._rarity, price, qty, min_bid)
-
-
-# ── Listing action view (on each listing embed) ──────────────────────
-class ListingActionView(discord.ui.View):
-    def __init__(self, lid: int, gid: int, seller_id: int, has_bid: bool, price: int, min_bid: int|None):
-        super().__init__(timeout=None)
-        self._lid=lid; self._gid=gid; self._seller=seller_id
-        self._has_bid=has_bid; self._price=price; self._min_bid=min_bid
-        self.buyout_btn.custom_id = f"ah_buy_{lid}"
-        self.bid_btn.custom_id    = f"ah_bid_{lid}"
-        self.cancel_btn.custom_id = f"ah_cancel_{lid}"
-        if not has_bid:
-            self.remove_item(self.bid_btn)
-
-    @discord.ui.button(label="💰 Buy Now", style=discord.ButtonStyle.success)
-    async def buyout_btn(self, inter: discord.Interaction, btn):
-        await inter.response.defer(ephemeral=True)
-        await _execute_buyout(inter, self._gid, self._lid, inter.user.id)
-
-    @discord.ui.button(label="📈 Place Bid", style=discord.ButtonStyle.primary)
-    async def bid_btn(self, inter: discord.Interaction, btn):
-        row = await db.pool.fetchrow("SELECT min_bid, current_bid FROM auction_house WHERE id=$1", self._lid)
-        min_next = max(row["min_bid"] or 1, (row["current_bid"] or 0) + 1)
-        await inter.response.send_modal(BidModal(self._lid, self._gid, min_next))
-
-    @discord.ui.button(label="❌ Cancel", style=discord.ButtonStyle.danger)
-    async def cancel_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._seller:
-            return await inter.response.send_message("Only the seller can cancel.", ephemeral=True)
-        class CV(discord.ui.View):
-            def __init__(cv): super().__init__(timeout=30)
-            @discord.ui.button(label="Yes, cancel",style=discord.ButtonStyle.danger)
-            async def yes(cv,i2,b):
-                await i2.response.defer(ephemeral=True)
-                await _cancel_listing(i2, self._gid, self._lid, inter.user.id)
-            @discord.ui.button(label="Keep listing",style=discord.ButtonStyle.secondary)
-            async def no(cv,i2,b): await i2.response.send_message("OK.",ephemeral=True)
-        await inter.response.send_message("Cancel this listing?",view=CV(),ephemeral=True)
-
-
-# ── Browse view ───────────────────────────────────────────────────────
-class BrowseView(discord.ui.View):
-    def __init__(self, guild: discord.Guild, rows: list, page: int, total: int, cat: str):
-        super().__init__(timeout=300)
-        self._guild=guild; self._rows=rows; self._page=page
-        self._total=total; self._cat=cat
-        self._upd()
-
-    def _upd(self):
-        total_pages = max(1,(self._total+PAGE_SIZE-1)//PAGE_SIZE)
-        self.prev_btn.disabled = self._page==0
-        self.next_btn.disabled = self._page>=total_pages-1
-
-    @discord.ui.button(label="◀",style=discord.ButtonStyle.secondary,row=1)
-    async def prev_btn(self, inter, btn):
-        await inter.response.defer()
-        self._page -= 1
-        await self._reload(inter)
-
-    @discord.ui.button(label="▶",style=discord.ButtonStyle.secondary,row=1)
-    async def next_btn(self, inter, btn):
-        await inter.response.defer()
-        self._page += 1
-        await self._reload(inter)
-
-    async def _reload(self, inter):
-        rows, total = await _fetch_page(inter.guild_id, self._page, self._cat)
-        self._rows=rows; self._total=total; self._upd()
-        await inter.edit_original_response(embed=_browse_embed(rows,inter.guild,self._page,total,self._cat), view=self)
-
-
-# ── Main AH Hub View ─────────────────────────────────────────────────
-class AHHubView(discord.ui.View):
-    def __init__(self, ctx):
-        super().__init__(timeout=300)
-        self._ctx = ctx
-        self._cat = "all"
-
-    def _home_embed(self) -> discord.Embed:
-        return discord.Embed(
-            title="🏛️ Auction House",
-            description=(
-                "**Buy** rare items from other players.\n"
-                "**Sell** your items with buyout or open bidding.\n"
-                "**Browse** by category to find what you need.\n\n"
-                f"• **5% tax** on successful sales\n"
-                f"• Listings expire in **48 hours**\n"
-                f"• Max **{AH_MAX_SLOTS}** active listings per person\n\n"
-                "Use the buttons below to get started."
-            ),
-            color=C_ECONOMY,
-            timestamp=datetime.now(timezone.utc),
-        )
-
-    @discord.ui.button(label="🏷️ Browse",    style=discord.ButtonStyle.primary,  row=0)
-    async def browse_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._ctx.author.id: return await inter.response.send_message("Not for you.",ephemeral=True)
-        await inter.response.defer()
-        await self._open_browse(inter)
-
-    @discord.ui.button(label="📦 Sell Item", style=discord.ButtonStyle.success,   row=0)
-    async def sell_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._ctx.author.id: return await inter.response.send_message("Not for you.",ephemeral=True)
-        await self._open_sell(inter)
-
-    @discord.ui.button(label="📋 My Listings",style=discord.ButtonStyle.secondary,row=0)
-    async def my_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._ctx.author.id: return await inter.response.send_message("Not for you.",ephemeral=True)
-        await inter.response.defer(ephemeral=True)
-        await self._open_my(inter)
-
-    @discord.ui.button(label="🔍 Find #ID",  style=discord.ButtonStyle.secondary, row=0)
-    async def find_btn(self, inter: discord.Interaction, btn):
-        if inter.user.id != self._ctx.author.id: return await inter.response.send_message("Not for you.",ephemeral=True)
-        class FindModal(discord.ui.Modal, title="Find Listing by ID"):
-            id_in = discord.ui.TextInput(label="Listing ID", required=True)
-            async def on_submit(m, i2):
-                await i2.response.defer(ephemeral=True)
-                raw = m.id_in.value.strip()
-                if not raw.isdigit(): return await i2.followup.send("❌ Enter a number.",ephemeral=True)
-                row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1 AND guild_id=$2", int(raw), inter.guild_id)
-                if not row: return await i2.followup.send(f"❌ Listing #{raw} not found.",ephemeral=True)
-                r = dict(row)
-                has_bid = r.get("min_bid") is not None
-                view = ListingActionView(r["id"],inter.guild_id,r["seller_id"],has_bid,r["price"],r.get("min_bid"))
-                await i2.followup.send(embed=_listing_embed(r,i2.guild), view=view, ephemeral=True)
-        await inter.response.send_modal(FindModal())
-
-    async def _open_browse(self, inter: discord.Interaction):
-        # Category filter dropdown
-        cat_opts = [discord.SelectOption(label="🏛️ All Items", value="all", default=True)] + [
-            discord.SelectOption(label=v[0][:50], value=k) for k,v in CATEGORIES.items()
-        ]
-        cat_sel = discord.ui.Select(placeholder="🔍 Filter by category…", options=cat_opts, row=0)
-
-        async def cat_cb(i2: discord.Interaction):
-            await i2.response.defer()
-            cat = cat_sel.values[0]
-            rows, total = await _fetch_page(i2.guild_id, 0, cat)
-            bv = BrowseView(i2.guild, rows, 0, total, cat)
-            # Add category dropdown to browse view
-            bv.clear_items()
-            for o in cat_sel.options: o.default = (o.value == cat)
-            bv.add_item(cat_sel)
-            bv.add_item(bv.prev_btn); bv.add_item(bv.next_btn)
-            await i2.edit_original_response(
-                embed=_browse_embed(rows, i2.guild, 0, total, cat),
-                view=bv,
+async def _execute_buyout(interaction: discord.Interaction, gid: int, lid: int, uid: int):
+    async with db.pool.acquire() as conn:
+        async with conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT * FROM auction_house WHERE id=$1 AND guild_id=$2 AND status='active' FOR UPDATE",
+                lid, gid
             )
-        cat_sel.callback = cat_cb
+            if not row:
+                await interaction.edit_original_response(content="❌ Listing no longer active.", view=None)
+                return
+            if row["seller_id"] == uid:
+                await interaction.edit_original_response(content="❌ Can't buy your own listing.", view=None)
+                return
+            bal = await conn.fetchval(
+                "SELECT balance FROM economy WHERE guild_id=$1 AND user_id=$2", gid, uid
+            ) or 0
+            if bal < row["price"]:
+                await interaction.edit_original_response(
+                    content=f"❌ Need **{row['price']:,}** but have **{bal:,}** coins.", view=None
+                )
+                return
 
-        rows, total = await _fetch_page(inter.guild_id, 0, "all")
-        bv = BrowseView(inter.guild, rows, 0, total, "all")
-        bv.clear_items()
-        bv.add_item(cat_sel)
-        bv.add_item(bv.prev_btn); bv.add_item(bv.next_btn)
-        await inter.edit_original_response(
-            embed=_browse_embed(rows, inter.guild, 0, total, "all"),
-            view=bv,
-        )
+            fee    = max(1, int(row["price"] * AH_FEE))
+            payout = row["price"] - fee
 
-    async def _open_sell(self, inter: discord.Interaction):
-        gid, uid = inter.guild_id, inter.user.id
-        # Check slot limit
-        active = await db.pool.fetchval(
-            "SELECT COUNT(*) FROM auction_house WHERE guild_id=$1 AND seller_id=$2 AND status='active'",
-            gid, uid
-        ) or 0
-        if active >= AH_MAX_SLOTS:
-            return await inter.response.send_message(
-                f"❌ Max {AH_MAX_SLOTS} active listings. Cancel one first.", ephemeral=True
+            # Refund outstanding bidder if any
+            prev_bidder = row.get("current_bidder_id")
+            prev_bid    = row.get("current_bid") or 0
+            if prev_bidder and prev_bid and prev_bidder != uid:
+                await conn.execute(
+                    "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+                    prev_bid, gid, prev_bidder
+                )
+
+            await conn.execute(
+                "UPDATE economy SET balance=balance-$1 WHERE guild_id=$2 AND user_id=$3",
+                row["price"], gid, uid
             )
-        # Load inventory
-        rows = await db.pool.fetch("""
-            SELECT i.item_key, i.quantity, e.name, e.rarity
-            FROM inventory i
-            LEFT JOIN (
-                SELECT key, name, rarity FROM (VALUES
-                    ('hp_potion_s','Small HP Potion','common'),
-                    ('hp_potion_m','Medium HP Potion','uncommon'),
-                    ('hp_potion_l','Large HP Potion','rare'),
-                    ('mana_potion','Mana Potion','uncommon'),
-                    ('revival_orb','Revival Orb','epic'),
-                    ('luck_charm','Lucky Charm','rare'),
-                    ('speed_boots','Boots of Swiftness','rare'),
-                    ('shadow_cloak','Shadow Cloak','rare'),
-                    ('iron_shield','Iron Shield','uncommon'),
-                    ('elixir','Elixir of Strength','epic'),
-                    ('antidote','Antidote','common'),
-                    ('mage_robe','Arcane Robe','rare')
-                ) AS t(key,name,rarity)
-            ) e ON i.item_key=e.key
-            WHERE i.guild_id=$1 AND i.user_id=$2 AND i.quantity>0
-        """, gid, uid)
+            await conn.execute("""
+                INSERT INTO economy (guild_id,user_id,balance) VALUES ($1,$2,$3)
+                ON CONFLICT (guild_id,user_id) DO UPDATE SET balance=economy.balance+$3
+            """, gid, row["seller_id"], payout)
+            await conn.execute("UPDATE auction_house SET status='sold' WHERE id=$1", lid)
 
-        # Also check RPG equipment
-        equip_rows = await db.pool.fetch(
-            "SELECT slot||'_'||item_name AS item_key, item_name, item_rank FROM rpg_equipment WHERE guild_id=$1 AND user_id=$2",
-            gid, uid
-        )
-
-        if not rows and not equip_rows:
-            return await inter.response.send_message(
-                "❌ No tradable items in your inventory. Buy items from `/market` or earn them from dungeons.",
-                ephemeral=True,
-            )
-
-        all_items = []
-        for r in rows:
-            name   = r.get("name") or r["item_key"].replace("_"," ").title()
-            rarity = r.get("rarity") or "common"
-            all_items.append((r["item_key"], name, rarity, r["quantity"]))
-        for r in equip_rows:
-            rank_rarity = {"F":"common","E":"common","D":"uncommon","C":"uncommon","B":"rare","A":"epic","S":"legendary"}.get(r["item_rank"],"common")
-            all_items.append((r["item_key"], r["item_name"], rank_rarity, 1))
-
-        opts = [
-            discord.SelectOption(
-                label=f"{name[:50]} ×{qty}",
-                value=f"{key}|{name}|{rarity}",
-                description=f"{rarity.title()} item",
-                emoji=RARITY_STAR.get(rarity,"⬜"),
-            ) for key, name, rarity, qty in all_items[:25]
-        ]
-        sel = discord.ui.Select(placeholder="Select item to sell…", options=opts)
-        async def sell_cb(i2):
-            parts = sel.values[0].split("|",2)
-            key, name, rarity = parts[0], parts[1], parts[2] if len(parts)>2 else "common"
-            await i2.response.send_modal(SellModal(key, name, rarity, gid, uid))
-        sel.callback = sell_cb
-        sv = discord.ui.View(timeout=120); sv.add_item(sel)
-        await inter.response.send_message("Which item do you want to list?", view=sv, ephemeral=True)
-
-    async def _open_my(self, inter: discord.Interaction):
-        rows = await db.pool.fetch("""
-            SELECT * FROM auction_house
-            WHERE guild_id=$1 AND seller_id=$2 AND status='active'
-            ORDER BY listed_at DESC
-        """, inter.guild_id, inter.user.id)
-        if not rows:
-            return await inter.followup.send("No active listings. Use **Sell** to list something!", ephemeral=True)
-        e = discord.Embed(title="📋 Your Active Listings", color=C_ECONOMY)
-        for r in rows:
-            r = dict(r)
-            star = RARITY_STAR.get(r.get("rarity","common"),"⬜")
-            exp  = r.get("expires_at")
-            exp_aware = exp.replace(tzinfo=timezone.utc) if exp and not exp.tzinfo else exp
-            e.add_field(
-                name=f"{star} #{r['id']} {r['item_name']}"+(f" ×{r['quantity']}" if r['quantity']>1 else ""),
-                value=(
-                    f"💰 {r['price']:,} 🪙"
-                    +(f"  ·  Top bid: {r['current_bid']:,}" if r.get('current_bid') else "")
-                    +f"\nExpires {discord.utils.format_dt(exp_aware,'R') if exp_aware else '?'}"
-                ),
-                inline=False,
-            )
-        await inter.followup.send(embed=e, ephemeral=True)
-
-
-# ── DB helpers ────────────────────────────────────────────────────────
-async def _fetch_page(guild_id: int, page: int, category: str = "all") -> tuple[list, int]:
-    offset = page * PAGE_SIZE
-    where  = "WHERE guild_id=$1 AND status='active'"
-    params = [guild_id]
-    if category != "all":
-        where += " AND category=$2"
-        params.append(category)
-
-    rows  = await db.pool.fetch(f"SELECT * FROM auction_house {where} ORDER BY listed_at DESC LIMIT {PAGE_SIZE} OFFSET {offset}", *params)
-    total = await db.pool.fetchval(f"SELECT COUNT(*) FROM auction_house {where}", *params) or 0
-    return [dict(r) for r in rows], total
-
-async def _post_listing(inter, gid, uid, item_key, item_name, rarity, price, qty, min_bid):
-    # Remove from inventory
-    existing = await db.pool.fetchval(
-        "SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3", gid, uid, item_key
+    await add_item(gid, uid, row["item_key"], row["quantity"])
+    buyer = interaction.guild.get_member(uid)
+    seller_m = interaction.guild.get_member(row["seller_id"])
+    from utils import log_txn
+    await log_txn(interaction.client, gid, "AH Buyout", buyer or f"<@{uid}>", seller_m or f"<@{row['seller_id']}>", payout, row["item_name"])
+    await interaction.edit_original_response(
+        content=(
+            f"✅ Bought **{row['item_name']} ×{row['quantity']}** for **{row['price']:,} coins**!\n"
+            f"Check `!inventory` to use it."
+        ),
+        view=None
     )
-    if existing and existing >= qty:
-        await db.pool.execute(
-            "UPDATE inventory SET quantity=quantity-$1 WHERE guild_id=$2 AND user_id=$3 AND item_key=$4",
-            qty, gid, uid, item_key
-        )
-
-    category = _auto_category(item_key, item_name)
-    expires  = datetime.now(timezone.utc) + timedelta(hours=AH_EXPIRE_H)
-    row = await db.pool.fetchrow("""
-        INSERT INTO auction_house
-            (guild_id, seller_id, item_key, item_name, rarity, category, quantity,
-             price, min_bid, status, expires_at, listed_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'active',$10,NOW())
-        RETURNING id
-    """, gid, uid, item_key, item_name, rarity, category, qty, price, min_bid, expires)
-    lid = row["id"]
-
-    # Post to market channel
-    cat_name, cat_color = CATEGORIES.get(category, CATEGORIES["other"])
-    has_bid = min_bid is not None
-    lview   = ListingActionView(lid, gid, uid, has_bid, price, min_bid)
-    le      = _listing_embed({"id":lid,"seller_id":uid,"item_name":item_name,"rarity":rarity,
-                               "category":category,"quantity":qty,"price":price,"min_bid":min_bid,
-                               "current_bid":None,"current_bidder_id":None,"expires_at":expires,
-                               "status":"active"}, inter.guild)
-
-    ch_id = await get_market_channel(gid)
-    ch    = inter.client.get_channel(int(ch_id)) if ch_id else inter.channel
-    if not ch: ch = inter.channel
-
-    msg = await ch.send(embed=le, view=lview)
-    inter.client.add_view(lview, message_id=msg.id)
-
-    await db.pool.execute(
-        "UPDATE auction_house SET message_id=$1, channel_id=$2 WHERE id=$3",
-        msg.id, ch.id, lid
-    )
-    notice = f"✅ Listed **{item_name}** ×{qty} for **{price:,} 🪙**!" + (f" (Bid from {min_bid:,})" if min_bid else "")
-    if ch.id != inter.channel_id:
-        notice += f"\nPosted in {ch.mention}"
-    await inter.followup.send(notice, ephemeral=True)
-
-async def _place_bid(inter, gid, lid, uid, bid_amount):
-    row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1 AND status='active' AND guild_id=$2", lid, gid)
-    if not row: return await inter.followup.send("❌ Listing gone.",ephemeral=True)
-    if uid == row["seller_id"]: return await inter.followup.send("❌ Can't bid on your own listing.",ephemeral=True)
-    min_next = max(row["min_bid"] or 1, (row["current_bid"] or 0) + 1)
-    if bid_amount < min_next: return await inter.followup.send(f"❌ Minimum bid is **{min_next:,}**.",ephemeral=True)
-    if bid_amount >= row["price"]: return await _execute_buyout(inter, gid, lid, uid)
-    bal = await get_balance(gid, uid)
-    if bal < bid_amount: return await inter.followup.send(f"❌ Need {bid_amount:,} but have {bal:,}.",ephemeral=True)
-
-    # Refund previous bidder
-    if row["current_bidder_id"] and row["current_bid"]:
-        await add_coins(gid, row["current_bidder_id"], row["current_bid"])
-        prev = inter.guild.get_member(row["current_bidder_id"])
-        if prev:
-            try:
-                await prev.send(embed=discord.Embed(
-                    title="📉 Outbid!",
-                    description=f"You were outbid on **{row['item_name']}**. Your {row['current_bid']:,} 🪙 refunded.",
-                    color=C_WARN,
-                ))
-            except: pass
-
-    await add_coins(gid, uid, -bid_amount)
-    await db.pool.execute("UPDATE auction_house SET current_bid=$1, current_bidder_id=$2 WHERE id=$3", bid_amount, uid, lid)
-    await inter.followup.send(f"✅ Bid of **{bid_amount:,} 🪙** placed on **{row['item_name']}**!", ephemeral=True)
-    # Update listing embed
-    await _refresh_listing(inter.client, gid, lid, inter.guild, "new_bid")
-
-async def _execute_buyout(inter, gid, lid, uid):
-    row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1 AND status='active' AND guild_id=$2", lid, gid)
-    if not row: return await inter.followup.send("❌ Listing gone.",ephemeral=True)
-    if uid == row["seller_id"]: return await inter.followup.send("❌ Can't buy your own listing.",ephemeral=True)
-    bal = await get_balance(gid, uid)
-    if bal < row["price"]: return await inter.followup.send(f"❌ Need {row['price']:,} but have {bal:,}.",ephemeral=True)
-
-    # Refund existing bidder
-    if row["current_bidder_id"] and row["current_bid"] and row["current_bidder_id"] != uid:
-        await add_coins(gid, row["current_bidder_id"], row["current_bid"])
-
-    await add_coins(gid, uid, -row["price"])
-    fee = int(row["price"] * AH_FEE)
-    await add_coins(gid, row["seller_id"], row["price"] - fee)
-
-    # Give item
-    await db.pool.execute("""
-        INSERT INTO inventory (guild_id,user_id,item_key,quantity) VALUES ($1,$2,$3,$4)
-        ON CONFLICT (guild_id,user_id,item_key) DO UPDATE SET quantity=inventory.quantity+$4
-    """, gid, uid, row["item_key"], row["quantity"])
-
-    await db.pool.execute("UPDATE auction_house SET status='sold', buyer_id=$1, sold_at=NOW() WHERE id=$2", uid, lid)
-
-    buyer  = inter.guild.get_member(uid)
-    seller = inter.guild.get_member(row["seller_id"])
-    await inter.followup.send(
-        embed=discord.Embed(
-            title="✅ Purchase Complete!",
-            description=(
-                f"**{row['item_name']}** ×{row['quantity']}\n"
-                f"Paid: **{row['price']:,}** 🪙  ·  Fee: {fee:,}"
-            ),
-            color=C_SUCCESS,
-        ), ephemeral=True
-    )
+    # Notify seller
+    seller = interaction.guild.get_member(row["seller_id"])
     if seller:
         try:
             await seller.send(embed=discord.Embed(
-                title="💰 Item Sold!",
-                description=f"**{row['item_name']}** sold to {buyer.mention if buyer else 'someone'} for {row['price']:,} 🪙 (you received {row['price']-fee:,}).",
-                color=C_SUCCESS,
+                description=f"💰 Your listing **{row['item_name']}** sold for **{payout:,} coins** (after fee).",
+                color=C_ECONOMY
             ))
-        except: pass
-    await _refresh_listing(inter.client, gid, lid, inter.guild, "sold")
+        except Exception:
+            pass
 
-async def _cancel_listing(inter, gid, lid, uid):
-    row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1 AND seller_id=$2 AND status='active'", lid, uid)
-    if not row: return await inter.followup.send("❌ Listing not found.",ephemeral=True)
-    if row["current_bidder_id"] and row["current_bid"]:
-        await add_coins(gid, row["current_bidder_id"], row["current_bid"])
-    # Return item
-    await db.pool.execute("""
-        INSERT INTO inventory (guild_id,user_id,item_key,quantity) VALUES ($1,$2,$3,$4)
-        ON CONFLICT (guild_id,user_id,item_key) DO UPDATE SET quantity=inventory.quantity+$4
-    """, gid, uid, row["item_key"], row["quantity"])
+    await _refresh_listing_msg(interaction.client, gid, lid, interaction.guild)
+    await _post_txn(interaction.client, gid, interaction.guild, row, buyer,
+                    row["price"], payout, "buyout")
+
+
+async def _cancel_listing(interaction: discord.Interaction, gid: int, lid: int, uid: int):
+    row = await db.pool.fetchrow(
+        "SELECT * FROM auction_house WHERE id=$1 AND guild_id=$2 AND seller_id=$3 AND status='active'",
+        lid, gid, uid
+    )
+    if not row:
+        await interaction.followup.send("❌ Listing not found or already closed.", ephemeral=True)
+        return
+
+    # Refund bidder if any
+    prev_bidder = row.get("current_bidder_id")
+    prev_bid    = row.get("current_bid") or 0
+    if prev_bidder and prev_bid:
+        await db.pool.execute(
+            "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+            prev_bid, gid, prev_bidder
+        )
+
     await db.pool.execute("UPDATE auction_house SET status='cancelled' WHERE id=$1", lid)
-    await inter.followup.send("❌ Listing cancelled. Item returned.",ephemeral=True)
-    await _refresh_listing(inter.client, gid, lid, inter.guild)
+    await add_item(gid, uid, row["item_key"], row["quantity"])
+    await interaction.followup.send(
+        f"✅ Listing `#{lid}` cancelled — **{row['item_name']}** returned to inventory.",
+        ephemeral=True
+    )
+    await _refresh_listing_msg(interaction.client, gid, lid, interaction.guild)
 
-async def _refresh_listing(bot, gid, lid, guild, highlight=""):
-    row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1", lid)
-    if not row: return
-    ch  = bot.get_channel(row.get("channel_id"))
-    if not ch: return
+
+# ── Sell flow (called from inventory button or !ah sell) ──────────
+async def _do_sell(interaction: discord.Interaction, gid: int, uid: int, item_key: str, price: int, quantity: int, min_bid: int | None):
+    """Actual sell logic – works from any channel, posts to market channel."""
     try:
-        msg = await ch.fetch_message(row["message_id"])
-        r = dict(row)
-        e = _listing_embed(r, guild, highlight)
-        if r["status"] != "active":
-            await msg.edit(embed=e, view=None)
-        else:
-            has_bid = r.get("min_bid") is not None
-            v = ListingActionView(lid,gid,r["seller_id"],has_bid,r["price"],r.get("min_bid"))
-            await msg.edit(embed=e, view=v)
-    except Exception: pass
+        from airi.guild_config import get_market_channel
+        from airi.inventory import get_quantity, remove_item, ITEMS
+        from datetime import datetime, timedelta, timezone
+
+        market_ch_id = await get_market_channel(gid)
+        target_ch = interaction.client.get_channel(market_ch_id) if market_ch_id else interaction.channel
+        if not target_ch:
+            target_ch = interaction.channel
+
+        owned = await get_quantity(gid, uid, item_key)
+        if owned < quantity:
+            return await interaction.response.send_message(f"❌ You only have ×{owned}.", ephemeral=True)
+        if await _count_active(gid, uid) >= AH_MAX_SLOTS:
+            return await interaction.response.send_message(f"❌ Max {AH_MAX_SLOTS} active listings.", ephemeral=True)
+        ok = await remove_item(gid, uid, item_key, quantity)
+        if not ok:
+            return await interaction.response.send_message("❌ Failed to remove item.", ephemeral=True)
+
+        expires = _utc_naive(datetime.now(timezone.utc) + timedelta(hours=AH_EXPIRE_H))
+        item_info = ITEMS[item_key]
+        row = await db.pool.fetchrow("""
+            INSERT INTO auction_house
+                (guild_id, seller_id, item_key, item_name, rarity, quantity, price, min_bid, expires_at)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            RETURNING id
+        """, gid, uid, item_key, item_info["name"], item_info["rarity"], quantity, price, min_bid, expires)
+        lid = row["id"]
+        full_row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1", lid)
+        has_bid = min_bid is not None
+        view = ListingActionView(lid, gid, uid, has_bid, price, min_bid)
+        e = _listing_embed(full_row, interaction.guild)
+        msg = await target_ch.send(embed=e, view=view)
+        # Register the view persistently so it survives restarts
+        interaction.client.add_view(view, message_id=msg.id)
+        await db.pool.execute(
+            "UPDATE auction_house SET listing_message_id=$1, listing_channel_id=$2 WHERE id=$3",
+            msg.id, target_ch.id, lid
+        )
+        await interaction.response.send_message(
+            f"✅ Listed **{item_info['name']} ×{quantity}** for **{price:,}** coins in {target_ch.mention}!",
+            ephemeral=True
+        )
+    except Exception as e:
+        print(f"_do_sell error: {e}")
+        await interaction.response.send_message(f"❌ Failed to list item: {str(e)[:200]}", ephemeral=True)
 
 
-# ── Cog ───────────────────────────────────────────────────────────────
+# ── Interactive Sell Select (for !ah sell) ────────────────────────
+class SellItemSelect(discord.ui.Select):
+    def __init__(self, tradable_items: list[dict], guild_id: int, user_id: int, bot):
+        self._gid = guild_id
+        self._uid = user_id
+        self._bot = bot
+        options = [
+            discord.SelectOption(
+                label=f"{it['name']} ×{it['qty']}",
+                value=it["key"],
+                description=f"Rarity: {it['rarity'].title()}",
+                emoji=RARITY_STAR.get(it['rarity'], '⬜')
+            )
+            for it in tradable_items[:25]
+        ]
+        super().__init__(placeholder="Select an item to sell...", options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self._uid:
+            return await interaction.response.send_message("Not for you.", ephemeral=True)
+        selected_key = self.values[0]
+        item_info = ITEMS[selected_key]
+
+        class SellModal(discord.ui.Modal, title=f"Sell {item_info['name']}"):
+            price_in = discord.ui.TextInput(label="Buyout price (coins)", placeholder="e.g. 2000", required=True)
+            qty_in = discord.ui.TextInput(label="Quantity", placeholder="1", default="1", required=False)
+            bid_in = discord.ui.TextInput(label="Starting bid (optional)", placeholder="Leave blank for buyout only", required=False)
+
+            async def on_submit(self_, inter2):
+                raw_price = self_.price_in.value.strip().replace(",","")
+                raw_qty = (self_.qty_in.value.strip() or "1").replace(",","")
+                raw_bid = self_.bid_in.value.strip().replace(",","")
+                if not raw_price.isdigit() or not raw_qty.isdigit():
+                    return await inter2.response.send_message("❌ Invalid numbers.", ephemeral=True)
+                price_val = int(raw_price)
+                qty_val = int(raw_qty)
+                bid_val = int(raw_bid) if raw_bid.isdigit() else None
+                if bid_val and bid_val >= price_val:
+                    return await inter2.response.send_message("❌ Starting bid must be less than buyout.", ephemeral=True)
+                await _do_sell(inter2, self._gid, self._uid, selected_key, price_val, qty_val, bid_val)
+
+        await interaction.response.send_modal(SellModal())
+
+
+# ── Cog ───────────────────────────────────────────────────────────
 class AuctionHouseCog(commands.Cog, name="AuctionHouse"):
     def __init__(self, bot):
         self.bot = bot
-        self.expire_loop.start()
-
-    def cog_unload(self): self.expire_loop.cancel()
-
-    @tasks.loop(minutes=15)
-    async def expire_loop(self):
-        await self.bot.wait_until_ready()
-        rows = await db.pool.fetch("SELECT * FROM auction_house WHERE status='active' AND expires_at < NOW()")
-        for r in rows:
-            r = dict(r)
-            if r.get("current_bidder_id") and r.get("current_bid"):
-                await add_coins(r["guild_id"], r["current_bidder_id"], r["current_bid"])
-            await db.pool.execute("""
-                INSERT INTO inventory (guild_id,user_id,item_key,quantity) VALUES ($1,$2,$3,$4)
-                ON CONFLICT (guild_id,user_id,item_key) DO UPDATE SET quantity=inventory.quantity+$4
-            """, r["guild_id"], r["seller_id"], r["item_key"], r["quantity"])
-            await db.pool.execute("UPDATE auction_house SET status='expired' WHERE id=$1", r["id"])
-            guild = self.bot.get_guild(r["guild_id"])
-            if guild: await _refresh_listing(self.bot, r["guild_id"], r["id"], guild)
 
     async def cog_load(self):
-    # Schedule view restoration after bot is ready, don't block cog loading
-        self.bot.loop.create_task(self._restore_views())
+        """Re-attach persistent views to all active listings after bot is ready."""
+        async def restore():
+            await self.bot.wait_until_ready()
+            rows = await db.pool.fetch("""
+                SELECT id, guild_id, seller_id, item_key, item_name, quantity,
+                       rarity, price, min_bid, current_bid, current_bidder_id, status,
+                       expires_at,
+                       COALESCE(channel_id, listing_channel_id)   AS channel_id,
+                       COALESCE(message_id, listing_message_id)   AS message_id
+                FROM auction_house
+                WHERE status='active'
+                  AND (listing_message_id IS NOT NULL OR message_id IS NOT NULL)
+            """)
+            count = 0
+            for row in rows:
+                guild = self.bot.get_guild(row["guild_id"])
+                if not guild:
+                    continue
+                ch_id = row["channel_id"] if "channel_id" in row.keys() else row.get("listing_channel_id")
+                channel = self.bot.get_channel(ch_id) if ch_id else None
+                if not channel:
+                    continue
+                try:
+                    msg_id = row["message_id"] if "message_id" in row.keys() else row.get("listing_message_id")
+                    message = await channel.fetch_message(msg_id)
+                    has_bid = row.get("min_bid") is not None
+                    view = ListingActionView(
+                        row["id"], row["guild_id"], row["seller_id"],
+                        has_bid, row["price"], row.get("min_bid")
+                    )
+                    self.bot.add_view(view, message_id=message.id)
+                    await message.edit(view=view)
+                    count += 1
+                except Exception as e:
+                    print(f"Failed to restore listing {row['id']}: {e}")
+            print(f"Restored {count} auction house listings")
+        
+        # Schedule the restoration task to run after the bot is ready
+        asyncio.create_task(restore())
 
-    async def _restore_views(self):
-        await self.bot.wait_until_ready()
-        rows = await db.pool.fetch("SELECT * FROM auction_house WHERE status='active' AND message_id IS NOT NULL")
-        for r in rows:
-            r = dict(r)
-            has_bid = r.get("min_bid") is not None
-            v = ListingActionView(r["id"], r["guild_id"], r["seller_id"], has_bid, r["price"], r.get("min_bid"))
-            self.bot.add_view(v, message_id=r["message_id"])
-
-
-
-    @commands.hybrid_command(name="ah", aliases=["auction","auctionhouse","market_ah"],
-                             description="Auction House — buy, sell, and browse player listings")
+    @commands.group(name="ah", invoke_without_command=True, aliases=["auctionhouse"])
     async def ah(self, ctx):
-        """Full Agora-style auction house in one command."""
-        view = AHHubView(ctx)
-        await ctx.send(embed=view._home_embed(), view=view)
+        if ctx.invoked_subcommand is not None:
+            return
+        await self.ah_list(ctx)
+
+    @ah.command(name="list", aliases=["browse"])
+    async def ah_list(self, ctx, sort: str = "new"):
+        """Browse the AH. Buttons handle all bidding/buying."""
+        if not await check_channel(ctx, "market"):
+            return
+        gid = ctx.guild.id
+
+        # If there's a market channel and we're not in it, redirect
+        market_ch_id = await get_market_channel(gid)
+        if market_ch_id and ctx.channel.id != market_ch_id:
+            market_ch = self.bot.get_channel(market_ch_id)
+            if market_ch:
+                await _err(ctx, f"Browse the Auction House in {market_ch.mention}.")
+                return
+
+        order_map = {
+            "price":   "price ASC",
+            "priceh":  "price DESC",
+            "rarity":  "CASE rarity WHEN 'mythic' THEN 5 WHEN 'legendary' THEN 4 WHEN 'epic' THEN 3 WHEN 'rare' THEN 2 ELSE 1 END DESC",
+            "new":     "id DESC",
+        }
+        order = order_map.get(sort.lower(), "id DESC")
+
+        rows = await db.pool.fetch(
+            f"SELECT * FROM auction_house WHERE guild_id=$1 AND status='active' ORDER BY {order} LIMIT 80",
+            gid
+        )
+        if not rows:
+            return await ctx.send(embed=discord.Embed(
+                title="🏪 Auction House",
+                description="No active listings.\nSell gacha items via your `!inventory` → Sell button!",
+                color=C_GACHA
+            ))
+
+        # Paginated overview embed
+        pages = [rows[i:i+PAGE_SIZE] for i in range(0, len(rows), PAGE_SIZE)]
+        current = [0]
+
+        def build_overview(idx):
+            chunk = pages[idx]
+            e = discord.Embed(title=f"🏪 Auction House — {len(rows)} listings", color=C_GACHA)
+            for r in chunk:
+                star   = RARITY_STAR.get(r["rarity"], "⬜")
+                seller = ctx.guild.get_member(r["seller_id"])
+                sname  = seller.display_name if seller else f"<@{r['seller_id']}>"
+                has_bid = r.get("min_bid") is not None
+                bid_txt = " · 💸 Bidding" if has_bid else ""
+                e.add_field(
+                    name=f"#{r['id']} {star} {r['item_name']} ×{r['quantity']}",
+                    value=f"**{r['price']:,}** coins · {sname}{bid_txt}",
+                    inline=False,
+                )
+            e.set_footer(text=f"Page {idx+1}/{len(pages)} · Use listing buttons to bid/buy")
+            return e
+
+        class PageView(discord.ui.View):
+            def __init__(self_):
+                super().__init__(timeout=180)
+                self_._update()
+            def _update(self_):
+                self_.prev.disabled = current[0] == 0
+                self_.next.disabled = current[0] == len(pages) - 1
+            @discord.ui.button(label="◀ Prev", style=discord.ButtonStyle.secondary)
+            async def prev(self_, inter, btn):
+                if inter.user.id != ctx.author.id:
+                    return await inter.response.send_message("Not for you.", ephemeral=True)
+                current[0] -= 1; self_._update()
+                await inter.response.edit_message(embed=build_overview(current[0]), view=self_)
+            @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+            async def next(self_, inter, btn):
+                if inter.user.id != ctx.author.id:
+                    return await inter.response.send_message("Not for you.", ephemeral=True)
+                current[0] += 1; self_._update()
+                await inter.response.edit_message(embed=build_overview(current[0]), view=self_)
+
+        v = PageView() if len(pages) > 1 else None
+        await ctx.send(embed=build_overview(0), view=v)
+
+    @ah.command(name="sell")
+    async def ah_sell(self, ctx, item_key: str = None, price: int = None, quantity: int = 1, min_bid: int = None):
+        """
+        List an item for sale.
+        If no arguments, shows interactive item selector.
+        """
+        if not await check_channel(ctx, "market"):
+            return
+        gid, uid = ctx.guild.id, ctx.author.id
+
+        # If item_key not provided, show dropdown of tradable items
+        if item_key is None:
+            inv = await get_inventory(gid, uid)
+            tradable = [it for it in inv if ITEMS.get(it["key"], {}).get("tradable", False) and it["qty"] > 0]
+            if not tradable:
+                return await _err(ctx, "You have no tradable items. Get some from `!gacha` or `!shop`!")
+            view = discord.ui.View(timeout=120)
+            view.add_item(SellItemSelect(tradable, gid, uid, self.bot))
+            await ctx.send("Select an item to sell:", view=view)
+            return
+
+        # Direct arguments mode
+        if price is None:
+            return await _err(ctx, "Usage: `!ah sell <item_key> <price> [quantity] [min_bid]` or just `!ah sell` for interactive.")
+        # Need a context-like object for direct command; we'll create a fake interaction wrapper or just call _do_sell directly with ctx.
+        # But _do_sell expects an interaction, so we'll adapt by sending a followup.
+        await _do_sell(ctx, gid, uid, item_key, price, quantity, min_bid)  # ctx will work because we use interaction.client? Actually ctx is not interaction.
+        # Better: we'll call a helper that handles both. For simplicity, we'll just use a temporary interaction shim.
+        # Since this is a text command, we'll create a wrapper.
+        class FakeInteraction:
+            def __init__(self, ctx_):
+                self.user = ctx_.author
+                self.guild = ctx_.guild
+                self.channel = ctx_.channel
+                self.client = ctx_.bot
+                self._ctx = ctx_
+                self.response = type('Response', (), {
+                    'send_message': lambda _, content, ephemeral=False: ctx_.send(content),
+                    'defer': lambda: None
+                })()
+                self.followup = type('Followup', (), {
+                    'send': lambda _, content, ephemeral=False: ctx_.send(content)
+                })()
+            async def response_send_message(self, content, ephemeral=False):
+                await self._ctx.send(content)
+        fake_inter = FakeInteraction(ctx)
+        await _do_sell(fake_inter, gid, uid, item_key, price, quantity, min_bid)
+
+    @ah.command(name="my")
+    async def ah_my(self, ctx):
+        """Show your active listings."""
+        gid = ctx.guild.id
+        uid = ctx.author.id
+        rows = await db.pool.fetch(
+            "SELECT id, item_name, quantity, price, min_bid, status, expires_at FROM auction_house WHERE guild_id=$1 AND seller_id=$2 AND status='active'",
+            gid, uid
+        )
+        if not rows:
+            return await ctx.send(embed=discord.Embed(description="You have no active listings.", color=C_WARN))
+        e = discord.Embed(title="Your Active Listings", color=C_GACHA)
+        for r in rows:
+            e.add_field(
+                name=f"#{r['id']} {r['item_name']} ×{r['quantity']}",
+                value=f"💰 {r['price']:,} coins | Bidding: {'Yes' if r['min_bid'] else 'No'} | Expires: {discord.utils.format_dt(r['expires_at'], 'R')}",
+                inline=False
+            )
+        await ctx.send(embed=e)
+
+    @ah.command(name="info")
+    async def ah_info(self, ctx, listing_id: int):
+        """Get info and jump to a listing."""
+        gid = ctx.guild.id
+        row = await db.pool.fetchrow("SELECT * FROM auction_house WHERE id=$1 AND guild_id=$2", listing_id, gid)
+        if not row:
+            return await _err(ctx, f"Listing `#{listing_id}` not found.")
+        msg_id = row.get("message_id")
+        ch_id  = row.get("channel_id")
+        if msg_id and ch_id and row["status"] == "active":
+            jump = f"https://discord.com/channels/{gid}/{ch_id}/{msg_id}"
+            await ctx.send(f"[Jump to listing #{listing_id}]({jump})", delete_after=15)
+        else:
+            await ctx.send(embed=_listing_embed(row, ctx.guild), delete_after=30)
+
+    async def expire_listings(self):
+        """Background task: expire old listings."""
+        rows = await db.pool.fetch(
+            "SELECT * FROM auction_house WHERE status='active' AND expires_at < NOW()"
+        )
+        for row in rows:
+            prev_bidder = row.get("current_bidder_id")
+            prev_bid    = row.get("current_bid") or 0
+            if prev_bidder and prev_bid:
+                await db.pool.execute(
+                    "UPDATE economy SET balance=balance+$1 WHERE guild_id=$2 AND user_id=$3",
+                    prev_bid, row["guild_id"], prev_bidder
+                )
+            await db.pool.execute("UPDATE auction_house SET status='expired' WHERE id=$1", row["id"])
+            await add_item(row["guild_id"], row["seller_id"], row["item_key"], row["quantity"])
+            guild = self.bot.get_guild(row["guild_id"])
+            if guild:
+                await _refresh_listing_msg(self.bot, row["guild_id"], row["id"], guild)

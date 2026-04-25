@@ -18,8 +18,27 @@ NSFW_COMMANDS: set[str] = {
     "fuck","bfuck","dickride","anal","bathroomfuck","bondage","blowjob",
     "kuni","pussyeat","lickdick","titjob","threesome","gangbang","fap",
     "grabbutts","grabboobs","grind","feet","finger","69","cum","cum_male",
-    "fuck_lesbian",
+    "fuck_lesbian","squirt","footjob","footlick","handjob","cumshot",
+    "hentai","lewd","spank","bathroomfuck","cum_male","pussyfuck",
 }
+
+def _all_actio_commands() -> dict[str, dict]:
+    """
+    Auto-build CMD_META from actio.ACTIONS.
+    Any key added to actio.py automatically becomes a registered command.
+    NSFW classification is determined by NSFW_COMMANDS above.
+    has_solo = True if the action has a "solo" key in actio.
+    """
+    import actio as _actio
+    meta = {}
+    for cmd, entry in _actio.ACTIONS.items():
+        if cmd in ("back","return"): continue  # internal only
+        meta[cmd] = {
+            "is_nsfw":  cmd in NSFW_COMMANDS,
+            "has_solo": bool(entry.get("solo")),
+            "desc":     f"Perform the {cmd} action on someone",
+        }
+    return meta
 
 
 # ── Helper: get action text (never returns same text twice in a row) ──
@@ -353,7 +372,9 @@ async def _gifsearch(ctx, *, query: str):
 
 
 # ── Setup all commands on the bot ─────────────────────────────────
-def setup_commands(bot, commands_data: dict):
+def setup_commands(bot, commands_data: dict | None = None):
+    if commands_data is None:
+        commands_data = _all_actio_commands()
     """
     Dynamically register all action commands as hybrid commands.
     commands_data: {cmd_name: {is_nsfw, has_solo, description}}

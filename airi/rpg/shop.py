@@ -387,15 +387,23 @@ class ShopView(discord.ui.View):
             async def buy_cb(inter):
                 if inter.user.id != self._ctx.author.id:
                     return await inter.response.send_message("Not for you.", ephemeral=True)
-                await inter.response.defer(ephemeral=True)
+                await inter.response.defer()
                 val = bsel.values[0]
+                gid, uid = inter.guild_id, inter.user.id
+                # Inline buy — result shown directly in the message
                 if val.startswith("spell:"):
-                    await _buy_spell(inter, val[6:], inter.guild_id, inter.user.id)
+                    result = await _buy_spell_inline(val[6:], gid, uid, inter.guild)
                 elif val.startswith("market:"):
-                    await _buy_market_item(inter, val[7:], inter.guild_id, inter.user.id,
-                                           travel_fee=tab_snap=="travel")
+                    result = await _buy_market_inline(val[7:], gid, uid, inter.guild, travel_fee=tab_snap=="travel")
                 else:
-                    await _buy_equip(inter, val[6:], inter.guild_id, inter.user.id)
+                    result = await _buy_equip_inline(val[6:], gid, uid, inter.guild)
+                # Show result in a result embed overlaid on the shop, then return to browse
+                import asyncio
+                await inter.edit_original_response(embed=result, view=None)
+                await asyncio.sleep(3)
+                # Reload shop
+                self._rebuild()
+                await inter.edit_original_response(embed=self._embed(), view=self)
             bsel.callback = buy_cb
             self.add_item(bsel)
 
@@ -488,13 +496,97 @@ async def _apply_market_effect(gid, uid, key, item):
         return "✅ Added to inventory. Use during dungeon battle."
 
 
+
+
+# ── Inline buy helpers (return embed, no ephemeral) ────────────────
+
+async def _buy_spell_inline(spell_idx, gid, uid, guild) -> discord.Embed:
+    detail = await get_spell(spell_idx)
+    if not detail:
+        return discord.Embed(description="Could not fetch spell.", color=0xe74c3c)
+    name   = detail.get("name","?")
+    lvl    = detail.get("level",0)
+    price  = spell_price(lvl)
+    rank   = RANK_FROM_LEVEL.get(min(lvl,9),"F")
+    mana   = 10 + lvl*5
+    school = detail.get("school",{}).get("name","?")
+    from airi.economy import get_balance, add_coins
+    exists = await db.pool.fetchval(
+        "SELECT 1 FROM rpg_skills WHERE guild_id=$1 AND user_id=$2 AND skill_name=$3", gid, uid, name)
+    if exists:
+        e = discord.Embed(title=name, description="You already know this spell!", color=0xf39c12)
+        return e
+    bal = await get_balance(gid, uid)
+    if bal < price:
+        return discord.Embed(description="Need "+str(price)+" coins, have "+str(bal)+".", color=0xe74c3c)
+    await add_coins(gid, uid, -price)
+    await db.pool.execute(
+        "INSERT INTO rpg_skills (guild_id,user_id,skill_name,skill_rank,mana_cost) "
+        "VALUES ($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING",
+        gid, uid, name, rank, mana)
+    eff = spell_effect(detail)
+    desc = "["+rank+"] "+school+" Lv"+str(lvl)+"\nMana: "+str(mana)+"\n"+eff+"\n\n-"+str(price)+" coins deducted."
+    return discord.Embed(title="Learned: "+name, description=desc, color=0x2ecc71)
+
+
+async def _buy_equip_inline(equip_idx, gid, uid, guild) -> discord.Embed:
+    detail = await get_equip(equip_idx)
+    if not detail:
+        return discord.Embed(description="Could not fetch item.", color=0xe74c3c)
+    name  = detail.get("name","?")
+    cat   = detail.get("equipment_category",{}).get("name","Gear")
+    price = equip_price(cat)
+    rank  = "F" if price<500 else ("E" if price<1000 else ("D" if price<2000 else "C"))
+    slot_map = {"Weapon":"weapon","Shield":"armor","Armor":"armor",
+                "Ring":"accessory","Wand":"accessory","Staff":"accessory","Rod":"accessory"}
+    slot  = slot_map.get(cat,"accessory")
+    ac    = detail.get("armor_class",{})
+    dmg   = detail.get("damage",{})
+    parts = []
+    if ac.get("base"):         parts.append("+"+str(ac["base"])+" DEF")
+    if dmg.get("damage_dice"): parts.append("+DMG ("+dmg["damage_dice"]+")")
+    eff_txt = "  /  ".join(parts) if parts else "General"
+    from airi.economy import get_balance, add_coins
+    bal = await get_balance(gid, uid)
+    if bal < price:
+        return discord.Embed(description="Need "+str(price)+" coins, have "+str(bal)+".", color=0xe74c3c)
+    await add_coins(gid, uid, -price)
+    await db.pool.execute(
+        "INSERT INTO rpg_equipment (guild_id,user_id,slot,item_name,item_rank,effect_desc) "
+        "VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (guild_id,user_id,slot) "
+        "DO UPDATE SET item_name=$4,item_rank=$5,effect_desc=$6",
+        gid, uid, slot, name, rank, eff_txt)
+    if ac.get("base"):
+        await db.pool.execute(
+            "UPDATE rpg_characters SET constitution=constitution+$1 WHERE guild_id=$2 AND user_id=$3",
+            max(1, ac["base"]//2), gid, uid)
+    desc = "Slot: "+slot+"  ["+rank+"]\nEffect: "+eff_txt+"\n\n-"+str(price)+" coins deducted."
+    return discord.Embed(title="Equipped: "+name, description=desc, color=0x2ecc71)
+
+
+async def _buy_market_inline(item_key, gid, uid, guild, travel_fee=False) -> discord.Embed:
+    it = MARKET_ITEMS.get(item_key)
+    if not it:
+        return discord.Embed(description="Item not found.", color=0xe74c3c)
+    total = it["price"] + (50 if travel_fee else 0)
+    from airi.economy import get_balance, add_coins
+    bal = await get_balance(gid, uid)
+    if bal < total:
+        return discord.Embed(description="Need "+str(total)+" coins, have "+str(bal)+".", color=0xe74c3c)
+    await add_coins(gid, uid, -total)
+    msg = await _apply_market_effect(gid, uid, item_key, it)
+    note = " (+50 travel fee)" if travel_fee else ""
+    desc = it["effect"]+"\n"+msg+"\n\n-"+str(total)+" coins"+note+"."
+    return discord.Embed(title="Bought: "+it["name"], description=desc, color=0x2ecc71)
+
+
 # ── Cog ─────────────────────────────────────────────────────────────
 class RPGShopCog(commands.Cog, name="RPGShop"):
     def __init__(self, bot): self.bot = bot
 
     @commands.hybrid_command(
         name="shop",
-        aliases=["rpgshop","spellshop","equipshop"],
+        aliases=["rpgshop","spellshop","equipshop"],  # /market alias removed; market.py owns /market
         description="Browse spells, weapons, armor, potions, and market equipment",
     )
     async def shop(self, ctx):
