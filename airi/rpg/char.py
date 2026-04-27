@@ -14,7 +14,14 @@ XP_TABLE = [
     85000,100000,120000,140000,165000,195000,225000,265000,305000,355000, # 11–20
     425000,495000,570000,650000,735000,820000,915000,1015000,1120000,1230000, # 21–30
 ]
-MAX_CHAR_LEVEL = len(XP_TABLE)
+MAX_CHAR_LEVEL = 100
+
+def _xp_for_level_100(lvl: int) -> int:
+    """Total XP to reach level `lvl`. Extends the 30-entry table up to 100."""
+    if lvl <= 1: return 0
+    idx = lvl - 1
+    if idx < len(XP_TABLE): return XP_TABLE[idx]
+    return int(XP_TABLE[-1] * (1.18 ** (lvl - len(XP_TABLE))))
 
 def xp_for_level(lvl: int) -> int:
     if lvl <= 1: return 0

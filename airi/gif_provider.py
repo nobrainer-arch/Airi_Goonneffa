@@ -226,3 +226,29 @@ async def get_gif(
         url, src = await get_sfw_gif(command, user_id=user_id)
         if url: return url, src
     return None, ""
+
+
+async def klipy_search(query: str, limit: int = 8) -> list[str]:
+    """Search Klipy for GIFs by query. Returns list of URLs."""
+    urls = await _klipy_pooled(query)
+    if urls: return [urls]
+    # Fallback: try direct Klipy search
+    from config import KLIPY_API_KEY
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                "https://api.klipy.com/v1/reactions/search",
+                params={"q": query, "per_page": limit},
+                headers={"Authorization": f"Bearer {KLIPY_API_KEY}"},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
+                    results = []
+                    for item in data.get("data",{}).get("clips",[])[:limit]:
+                        url = item.get("clip",{}).get("url") or item.get("url")
+                        if url: results.append(url)
+                    return results
+    except Exception as e:
+        print(f"klipy_search error: {e}")
+    return []

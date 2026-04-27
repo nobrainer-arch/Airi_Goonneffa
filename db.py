@@ -428,6 +428,17 @@ async def init():
                 claimed_at TIMESTAMP DEFAULT NOW(),
                 PRIMARY KEY (guild_id, user_id, event_id)
             );
+
+            CREATE TABLE IF NOT EXISTS user_languages (
+                guild_id   BIGINT NOT NULL,
+                user_id    BIGINT NOT NULL,
+                lang_code  TEXT   NOT NULL DEFAULT 'en',
+                PRIMARY KEY (guild_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS server_languages (
+                guild_id   BIGINT PRIMARY KEY,
+                lang_code  TEXT NOT NULL DEFAULT 'en'
+            );
             CREATE TABLE IF NOT EXISTS online_streaks (
                 guild_id             BIGINT NOT NULL,
                 user_id              BIGINT NOT NULL,

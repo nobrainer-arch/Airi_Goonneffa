@@ -115,7 +115,7 @@ class EconomyPanelView(discord.ui.View):
         e.set_footer(text="Buttons unlock when cooldowns reset · /economy @user <amount> to pay quickly")
         return e
 
-    async def _refresh(self, inter):
+    async def _panel_refresh(self, inter):
         from airi.daily_panel import _get_state
         self._state = await _get_state(self._gid, self._uid)
         self._build()
@@ -152,7 +152,7 @@ class EconomyPanelView(discord.ui.View):
             return await inter.response.send_message("Not for you.", ephemeral=True)
         await inter.response.defer()
         embeds, texts = await self._run(inter, "Economy", "_do_daily") or ([],[])
-        await self._refresh(inter)
+        await self._panel_refresh(inter)
         # Show result inline for 2 seconds, then return to main panel
         import asyncio
         if embeds:
@@ -162,14 +162,14 @@ class EconomyPanelView(discord.ui.View):
                 await inter.edit_original_response(embed=result_e, view=None)
                 await asyncio.sleep(2.5)
             except: pass
-        await self._refresh(inter)
+        await self._panel_refresh(inter)
 
     async def _do_work(self, inter: discord.Interaction):
         if inter.user.id != self._uid:
             return await inter.response.send_message("Not for you.", ephemeral=True)
         await inter.response.defer()
         embeds, texts = await self._run(inter, "Jobs", "_do_work") or ([],[])
-        await self._refresh(inter)
+        await self._panel_refresh(inter)
         import asyncio
         if embeds:
             try:
@@ -178,14 +178,14 @@ class EconomyPanelView(discord.ui.View):
                 await inter.edit_original_response(embed=result_e, view=None)
                 await asyncio.sleep(2.5)
             except: pass
-        await self._refresh(inter)
+        await self._panel_refresh(inter)
 
     async def _do_crime(self, inter: discord.Interaction):
         if inter.user.id != self._uid:
             return await inter.response.send_message("Not for you.", ephemeral=True)
         await inter.response.defer()
         embeds, texts = await self._run(inter, "Jobs", "_do_crime") or ([],[])
-        await self._refresh(inter)
+        await self._panel_refresh(inter)
         import asyncio
         if embeds:
             try:
@@ -194,7 +194,7 @@ class EconomyPanelView(discord.ui.View):
                 await inter.edit_original_response(embed=result_e, view=None)
                 await asyncio.sleep(2.5)
             except: pass
-        await self._refresh(inter)
+        await self._panel_refresh(inter)
 
     async def _open_pay(self, inter: discord.Interaction):
         if inter.user.id != self._uid:

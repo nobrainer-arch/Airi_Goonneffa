@@ -93,7 +93,7 @@ class SetupHomeView(discord.ui.View):
                 value=key,
                 description=hint[:100],
                 emoji=emoji,
-                default=bool(self._results.get(key)),
+                default=False,  # only one default allowed per select; track state in embed instead
             )
             for key, label, emoji, hint, _, _ in STEPS
         ]
