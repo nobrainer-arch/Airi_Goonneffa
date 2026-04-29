@@ -399,8 +399,9 @@ def setup_commands(bot, commands_data: dict | None = None):
         aliases  = config.ALIASES.get(cmd_name, [])
 
         def make_command(name=cmd_name, nsfw=is_nsfw, solo=has_solo):
-            @commands.hybrid_command(name=name, aliases=aliases[:10], description=desc, with_app_command=False)
-            async def _cmd(ctx, target: discord.Member = None):
+            @commands.hybrid_command(name=name, aliases=aliases[:10], description=desc)
+            async def _cmd(ctx, target: discord.Member = None, *, text: str = ""):
+                # text = flavor/extra words, e.g. "!hug @mark tightly" or "!cry why me"
                 # If no target and not a solo command, show picker
                 if target is None:
                     # Commands in SOLO_COMMANDS always do solo action
@@ -408,6 +409,7 @@ def setup_commands(bot, commands_data: dict | None = None):
                     if name in config.SOLO_COMMANDS:
                         raw    = _get_solo_text(name)
                         action = raw.format(author=ctx.author.display_name, target="")
+                        if text: action = action.rstrip("!.~") + " " + text.strip()
                         gif_url, _ = await get_gif(name, nsfw, user_id=getattr(ctx,"author",None) and ctx.author.id)
                         if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
                         e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=ctx.author)
@@ -471,6 +473,7 @@ def setup_commands(bot, commands_data: dict | None = None):
                 tg = await get_gender(str(target.id))     or "u"
                 raw     = _get_action_text(name, ag, tg)
                 action  = raw.format(author=ctx.author.display_name, target=target.mention)
+                if text: action = action.rstrip("!.~") + " " + text.strip()
                 gif_url, _ = await get_gif(name, nsfw, user_id=getattr(ctx,"author",None) and ctx.author.id)
                 if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
                 e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=target)
@@ -480,6 +483,23 @@ def setup_commands(bot, commands_data: dict | None = None):
                 if ag == "u":
                     await ctx.send(f"💡 {ctx.author.mention} set your gender with `!gender`", delete_after=10)
 
+            @_cmd.error
+            async def _cmd_err(ctx, error):
+                # Member conversion fails for freeform text like "!cry why me"
+                if isinstance(error, (commands.BadArgument, commands.MemberNotFound)):
+                    # Extract the full message after the command name as flavor text
+                    parts = ctx.message.content.split(None, 1)
+                    flavor = parts[1].strip() if len(parts) > 1 else ""
+                    raw    = _get_solo_text(name) or _get_action_text(name,"u","u")
+                    action = raw.format(author=ctx.author.display_name, target="")
+                    if flavor: action = action.rstrip("!.~") + " " + flavor
+                    gif_url, _ = await get_gif(name, is_nsfw, user_id=ctx.author.id)
+                    if not gif_url:
+                        return await _err(ctx, "Couldn't fetch a GIF right now.")
+                    e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=ctx.author)
+                    await ctx.send(embed=e)
+                else:
+                    raise error
             return _cmd
 
         cmd_obj = make_command()
