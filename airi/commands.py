@@ -399,7 +399,7 @@ def setup_commands(bot, commands_data: dict | None = None):
         aliases  = config.ALIASES.get(cmd_name, [])
 
         def make_command(name=cmd_name, nsfw=is_nsfw, solo=has_solo):
-            @commands.hybrid_command(name=name, aliases=aliases[:10], description=desc)
+            @commands.command(name=name, aliases=aliases[:10], description=desc)
             async def _cmd(ctx, target: discord.Member = None, *, text: str = ""):
                 # text = flavor/extra words, e.g. "!hug @mark tightly" or "!cry why me"
                 # If no target and not a solo command, show picker

@@ -175,7 +175,7 @@ async def setup_hook():
     from airi.rpg           import RPGStatsCog, DungeonCog, GuildSystemCog, EventsCog, MarketCog, RPGShopCog
     from airi.translator   import TranslatorCog
     from airi.games       import GamesCog
-    from airi.hub          import EconomyHub, SocialHub, LeaderboardHub, ServerHub, WaifuHub, InvHub, RelHub
+    from airi.hub          import EconomyHub, SocialHub, LeaderboardHub, ServerHub #WaifuHub, InvHub, RelHub
 
     for cog_cls in [
         EconomyCog, XPCog, SocialCog, MarketplaceCog, GuildConfigCog,
