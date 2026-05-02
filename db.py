@@ -513,6 +513,7 @@ async def init():
         "ALTER TABLE rpg_characters RENAME COLUMN defence TO constitution",
         "ALTER TABLE rpg_characters ALTER COLUMN constitution SET DEFAULT 10",
         "UPDATE rpg_characters SET constitution = 10 WHERE constitution IS NULL",
+        "ALTER TABLE rpg_characters ADD COLUMN IF NOT EXISTS pending_xp BIGINT NOT NULL DEFAULT 0",
     ]
     async with pool.acquire() as conn:
         for sql in migrations:

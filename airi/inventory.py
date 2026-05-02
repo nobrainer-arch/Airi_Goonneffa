@@ -25,6 +25,8 @@ ITEMS: dict[str, dict] = {
     "hp_potion_m":    {"name": "🧪 Medium HP Potion",      "rarity": "uncommon",  "tradable": True},
     "hp_potion_l":    {"name": "🧪 Large HP Potion",       "rarity": "rare",      "tradable": True},
     "mana_potion":    {"name": "💙 Mana Potion",            "rarity": "uncommon",  "tradable": True},
+    "antidote":       {"name": "🌿 Antidote",               "rarity": "common",    "tradable": True},
+    "revival_orb":    {"name": "✨ Revival Orb",            "rarity": "rare",      "tradable": False},
     "antidote":       {"name": "💊 Antidote",               "rarity": "common",    "tradable": True},
     "elixir":         {"name": "⚡ Elixir of Strength",    "rarity": "rare",      "tradable": True},
     "revival_orb":    {"name": "💫 Revival Orb",           "rarity": "epic",      "tradable": True},
@@ -126,6 +128,56 @@ async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_k
         msg = f"🎟️ Waifu Ticket ×{qty_bonus} — *claim feature coming soon!*"
     elif key == "biz_boost_2h":
         msg = "🏭 **Business Boost** applied for 2 hours!"
+    # ── HP / Mana potions (work outside combat too) ──────────────────
+    elif key in ("hp_potion_s", "hp_potion_m", "hp_potion_l"):
+        pct = {"hp_potion_s": 0.20, "hp_potion_m": 0.40, "hp_potion_l": 0.70}[key]
+        row = await db.pool.fetchrow(
+            "SELECT hp_current, hp_max FROM rpg_characters WHERE guild_id=$1 AND user_id=$2", gid, uid
+        )
+        if not row:
+            msg = "❌ No RPG character found. Create one with `/rpg`."
+        elif row["hp_current"] >= row["hp_max"]:
+            # Refund the item since HP is full
+            await db.pool.execute(
+                "INSERT INTO inventory (guild_id,user_id,item_key,quantity) VALUES ($1,$2,$3,1) "
+                "ON CONFLICT (guild_id,user_id,item_key) DO UPDATE SET quantity=inventory.quantity+1",
+                gid, uid, key
+            )
+            msg = "⚠️ HP already full — item not consumed."
+        else:
+            gain = max(1, int(row["hp_max"] * pct))
+            new_hp = min(row["hp_max"], row["hp_current"] + gain)
+            await db.pool.execute(
+                "UPDATE rpg_characters SET hp_current=$1 WHERE guild_id=$2 AND user_id=$3",
+                new_hp, gid, uid
+            )
+            potion_name = {"hp_potion_s":"Small","hp_potion_m":"Medium","hp_potion_l":"Large"}[key]
+            msg = f"❤️ **{potion_name} HP Potion** used: +{gain} HP → {new_hp}/{row['hp_max']}"
+    elif key == "mana_potion":
+        row = await db.pool.fetchrow(
+            "SELECT mana_current, mana_max FROM rpg_characters WHERE guild_id=$1 AND user_id=$2", gid, uid
+        )
+        if not row:
+            msg = "❌ No RPG character found. Create one with `/rpg`."
+        elif row["mana_current"] >= row["mana_max"]:
+            await db.pool.execute(
+                "INSERT INTO inventory (guild_id,user_id,item_key,quantity) VALUES ($1,$2,$3,1) "
+                "ON CONFLICT (guild_id,user_id,item_key) DO UPDATE SET quantity=inventory.quantity+1",
+                gid, uid, key
+            )
+            msg = "⚠️ Mana already full — item not consumed."
+        else:
+            gain = max(1, int(row["mana_max"] * 0.30))
+            new_mana = min(row["mana_max"], row["mana_current"] + gain)
+            await db.pool.execute(
+                "UPDATE rpg_characters SET mana_current=$1 WHERE guild_id=$2 AND user_id=$3",
+                new_mana, gid, uid
+            )
+            msg = f"💙 **Mana Potion** used: +{gain} Mana → {new_mana}/{row['mana_max']}"
+    elif key == "antidote":
+        msg = "🌿 **Antidote** used — clears Venom/Burn effects in your next dungeon battle."
+    elif key == "revival_orb":
+        msg = "✨ **Revival Orb** saved — activates automatically to survive one lethal hit."
     elif key.startswith("coins_"):
         import random
         ranges = {"coins_small": (100,300), "coins_medium": (200,500), "coins_large": (500,1500), "coins_jackpot": (5000,20000)}

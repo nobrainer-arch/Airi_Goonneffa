@@ -10,7 +10,7 @@ from datetime import datetime, timezone, timedelta
 import db
 from utils import _err, C_INFO, C_WARN, C_SUCCESS, C_ERROR
 from .engine import CombatUnit, BattleEngine, ai_choose_action
-from .char   import (get_char, get_skills, get_equipment, add_char_xp,
+from .char   import (get_char, get_skills, get_equipment, add_char_xp, add_pending_xp,
                      calc_hp, calc_mana, get_dungeon_tier, DIFFICULTIES, DUNGEON_TIERS)
 from .classes import CLASSES
 from .skills  import SKILL_DB
@@ -286,6 +286,7 @@ def _build_pc(char) -> CombatUnit:
         damage_reduction=cls.get("base",{}).get("damage_reduction",0.05),
         reflect_pct=0.10 if char["class"]=="Knight" else 0.0,
         grade="Normal", is_player=True,
+        class_name=char["class"],
         first_hit_active=char["class"]=="Gunman",
         first_hit_bonus=0.5 if char["class"]=="Gunman" else 0.0,
     )
@@ -593,6 +594,54 @@ class FloorBattleView(discord.ui.View):
         if sn and mc_>0: self._eng.player.cooldowns[sn]=3
         await self._proc(inter,action,sn,chosen.get("skill_mult",1.0),
                          chosen.get("is_magic",False),chosen.get("skill_effect",{}))
+
+    @discord.ui.button(label="🧪 Items",  style=discord.ButtonStyle.secondary, row=1)
+    async def items_btn(self,inter,btn):
+        if inter.user.id!=self._uid: return await inter.response.send_message("Not yours.",ephemeral=True)
+        from airi.rpg.shop import MARKET_ITEMS
+        POTION_KEYS=["hp_potion_s","hp_potion_m","hp_potion_l","mana_potion","antidote","revival_orb"]
+        owned=[]
+        for key in POTION_KEYS:
+            qty=await db.pool.fetchval("SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",self._gid,self._uid,key) or 0
+            if qty>0:
+                it=MARKET_ITEMS.get(key,{})
+                owned.append((key,it.get("name",key),qty))
+        if not owned:
+            return await inter.response.send_message("🧪 No usable items in inventory. Buy potions from .",ephemeral=True)
+        opts=[discord.SelectOption(label=f"{name} (x{qty})",value=key,description=MARKET_ITEMS.get(key,{}).get("effect","")[:80]) for key,name,qty in owned[:25]]
+        sel=discord.ui.Select(placeholder="Use a potion…",options=opts)
+        async def item_cb(i2):
+            if i2.user.id!=self._uid: return await i2.response.send_message("Not for you.",ephemeral=True)
+            await i2.response.defer()
+            key=sel.values[0]
+            ok=await db.pool.fetchval("SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",self._gid,self._uid,key) or 0
+            if ok<=0:
+                self._upd(); f=await self._render()
+                return await i2.edit_original_response(embed=self._embed("❌ No "+key+" left!"),attachments=[f],view=self)
+            await db.pool.execute("UPDATE inventory SET quantity=quantity-1 WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",self._gid,self._uid,key)
+            p=self._eng.player; note=""
+            if key=="hp_potion_s":
+                gain=max(1,int(p.hp_max*0.20)); p.hp=min(p.hp_max,p.hp+gain); note=f"🧪 Small HP Potion: +{gain} HP"
+            elif key=="hp_potion_m":
+                gain=max(1,int(p.hp_max*0.40)); p.hp=min(p.hp_max,p.hp+gain); note=f"🧪 Medium HP Potion: +{gain} HP"
+            elif key=="hp_potion_l":
+                gain=max(1,int(p.hp_max*0.70)); p.hp=min(p.hp_max,p.hp+gain); note=f"🧪 Large HP Potion: +{gain} HP"
+            elif key=="mana_potion":
+                gain=max(1,int(p.mana_max*0.30)); p.mana=min(p.mana_max,p.mana+gain); note=f"💙 Mana Potion: +{gain} Mana"
+            elif key=="antidote":
+                p.effects=[e for e in p.effects if e.etype not in ("venom","burn")]; note="🌿 Antidote: cured Venom/Burn"
+            elif key=="revival_orb":
+                if not any(e.etype=="revival" for e in p.effects):
+                    from .engine import Effect
+                    p.effects.append(Effect(etype="revival",duration=999,value=1.0,source="Revival Orb"))
+                note="✨ Revival Orb: survives next lethal hit"
+            self._log.append(note)
+            self._upd(); f=await self._render()
+            await i2.edit_original_response(embed=self._embed(note),attachments=[f],view=self)
+        sel.callback=item_cb
+        sv=discord.ui.View(timeout=30); sv.add_item(sel)
+        for c in self.children: c.disabled=True
+        await inter.response.edit_message(embed=self._embed("🧪 Choose an item:"),view=sv)
 
 
 # ─────────────────────────────────────────────────────────────────

@@ -223,18 +223,25 @@ class SetupStepView(discord.ui.View):
 
         e = discord.Embed(description=confirm_txt, color=C_SUCCESS)
         e.set_footer(text="Returning to menu…")
+        msg = interaction.message
         await interaction.response.edit_message(embed=e, view=self)
 
-        # Auto-return to home after brief pause
+        # Auto-return to home after brief pause — use message.edit() for reliability
         import asyncio
         await asyncio.sleep(1.5)
         self._parent._results = await _load_results(gid)
         self._parent._build_select()
         try:
-            await interaction.edit_original_response(
-                embed=_home_embed(self._ctx.guild, self._parent._results),
-                view=self._parent,
-            )
+            if msg:
+                await msg.edit(
+                    embed=_home_embed(self._ctx.guild, self._parent._results),
+                    view=self._parent,
+                )
+            else:
+                await interaction.edit_original_response(
+                    embed=_home_embed(self._ctx.guild, self._parent._results),
+                    view=self._parent,
+                )
         except Exception:
             pass
 
@@ -247,16 +254,23 @@ class SetupStepView(discord.ui.View):
         e.set_footer(text="Returning to menu…")
         for child in self.children:
             child.disabled = True
+        msg = interaction.message
         await interaction.response.edit_message(embed=e, view=self)
         import asyncio
         await asyncio.sleep(1.0)
         self._parent._results = await _load_results(self._ctx.guild.id)
         self._parent._build_select()
         try:
-            await interaction.edit_original_response(
-                embed=_home_embed(self._ctx.guild, self._parent._results),
-                view=self._parent,
-            )
+            if msg:
+                await msg.edit(
+                    embed=_home_embed(self._ctx.guild, self._parent._results),
+                    view=self._parent,
+                )
+            else:
+                await interaction.edit_original_response(
+                    embed=_home_embed(self._ctx.guild, self._parent._results),
+                    view=self._parent,
+                )
         except Exception:
             pass
 
@@ -306,7 +320,8 @@ class SetupCog(commands.Cog, name="Setup"):
         """Configure your server in one place. Re-runnable any time."""
         gid = ctx.guild.id
         if self._active.get(gid):
-            return await _err(ctx, "Setup is already open. Check your previous setup message.")
+            # Allow re-run by clearing stale lock (previous session may have timed out)
+            self._active.pop(gid, None)
         self._active[gid] = True
         try:
             results = await _load_results(gid)
@@ -314,6 +329,8 @@ class SetupCog(commands.Cog, name="Setup"):
             msg     = await ctx.send(embed=_home_embed(ctx.guild, results), view=view)
             view._msg = msg
             await view.wait()
+        except Exception as e:
+            print(f"Setup error for guild {gid}: {e}")
         finally:
             self._active.pop(gid, None)
 

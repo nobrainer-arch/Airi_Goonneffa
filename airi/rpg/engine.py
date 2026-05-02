@@ -70,6 +70,7 @@ class CombatUnit:
     reflect_pct:      float  # % of received damage reflected (Knight)
     grade:            str    = "Normal"
     is_player:        bool   = True
+    class_name:       str    = ""     # e.g. "Warrior", "Healer" — drives class passives
     # State
     stealth:          bool  = False
     stealth_bonus:    float = 0.0
@@ -194,10 +195,7 @@ class DamageCalculator:
             base = attacker.strength * str_mult * skill_mult
         res.raw = int(base)
 
-        # Berserker: low HP bonus
-        if attacker.is_player and (attacker.hp / max(attacker.hp_max, 1)) < 0.30:
-            if attacker.name != "": # check class name is Warrior handled outside
-                pass
+        # (Berserker bonus is handled as a str_boost effect in BattleEngine)
 
         dmg = float(base)
 
@@ -221,10 +219,7 @@ class DamageCalculator:
             dmg *= attacker.crit_damage
             log.append(f"💥 **CRITICAL HIT**: ×{attacker.crit_damage:.1f}")
 
-        # 5. Nightmare eye-break (×3 on sleeping monster)
-        if defender.sleeping and not attacker.is_player is False:
-            # player attacks sleeping monster
-            pass
+        # 5. Nightmare eye-break (×3 on sleeping target)
         if defender.sleeping:
             dmg *= 3.0
             res.nightmare_triggered = True
@@ -260,6 +255,8 @@ class DamageCalculator:
 
         # 11. Minimum 1
         res.final = max(1, int(dmg))
+
+        # 12b. Revival Orb — absorb a lethal hit (checked in BattleEngine after hp applied)
         log.append(f"💔 **{attacker.name}** → **{res.final}** dmg to {defender.name}")
 
         # 12. Reflection (Knight)
@@ -401,8 +398,8 @@ class BattleEngine:
                 result["player_dmg"] = dmg_res.final
                 result["log"].extend(dmg_res.log)
 
-                # Berserker passive
-                if self.player.is_player and self.player.hp > 0:
+                # Berserker passive — Warrior only
+                if self.player.is_player and self.player.hp > 0 and self.player.class_name == "Warrior":
                     hp_pct = self.player.hp / self.player.hp_max
                     if hp_pct < 0.30 and not any(e.etype=="str_boost" for e in self.player.effects):
                         self.player.add_effect("str_boost", 99, 1.5, "Berserker")
@@ -431,14 +428,22 @@ class BattleEngine:
                 m_mult = random.uniform(1.3, 1.8)
                 result["log"].append(f"⚠️ **{self.monster.name}** uses a special attack!")
             m_res = DamageCalculator.calculate(self.monster, self.player, m_mult)
-            self.player.hp = max(0, self.player.hp - m_res.final)
+            incoming = m_res.final
+            # Revival Orb passive — survive one lethal hit
+            for eff in self.player.effects[:]:
+                if eff.etype == "revival" and self.player.hp - incoming <= 0:
+                    self.player.effects.remove(eff)
+                    incoming = self.player.hp - 1
+                    result["log"].append("✨ **Revival Orb** activated — survived with 1 HP!")
+                    break
+            self.player.hp = max(0, self.player.hp - incoming)
             if m_res.reflected:
                 self.monster.hp = max(0, self.monster.hp - m_res.reflected)
             result["monster_dmg"] = m_res.final
             result["log"].extend(m_res.log)
 
-            # Healer regen every 2 turns
-            if self.turn % 2 == 0:
+            # Healer passive regen — Healer class only, every 2 turns
+            if self.turn % 2 == 0 and self.player.class_name == "Healer":
                 regen = max(1, int(self.player.hp_max * 0.05))
                 self.player.hp = min(self.player.hp_max, self.player.hp + regen)
                 result["log"].append(f"💚 **Healer Regen**: +{regen} HP")

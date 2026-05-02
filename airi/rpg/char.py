@@ -136,6 +136,7 @@ async def get_char(gid, uid) -> dict | None:
     d.setdefault("char_xp",     0)
     d.setdefault("race",        "Human")
     d.setdefault("cd_remover_charges", 0)
+    d.setdefault("pending_xp",   0)
     return d
 
 async def create_char(gid, uid, class_name: str, race: str = "Human") -> dict:
@@ -177,43 +178,58 @@ async def get_equipment(gid, uid) -> list[dict]:
     return [dict(r) for r in rows]
 
 async def add_char_xp(gid, uid, xp_gain: int) -> dict:
-    """Add XP, apply level-up if threshold reached. Returns result dict."""
+    """Legacy shim — delegates to add_pending_xp."""
+    return await add_pending_xp(gid, uid, xp_gain)
+
+async def add_pending_xp(gid, uid, xp_gain: int) -> dict:
+    """Add XP to the pending pool. Player spends it with /rpg levelup."""
+    await db.pool.execute(
+        "UPDATE rpg_characters SET char_xp=char_xp+$1, pending_xp=pending_xp+$1 WHERE guild_id=$2 AND user_id=$3",
+        xp_gain, gid, uid
+    )
     row = await db.pool.fetchrow(
-        "SELECT char_level,char_xp,class,spirit,constitution,vitality FROM rpg_characters WHERE guild_id=$1 AND user_id=$2",
+        "SELECT char_level, char_xp, pending_xp FROM rpg_characters WHERE guild_id=$1 AND user_id=$2",
         gid, uid
     )
-    if not row: return {"leveled_up":False,"new_level":1}
+    if not row: return {"leveled_up": False, "new_level": 1}
+    return {
+        "leveled_up": False, "new_level": int(row["char_level"] or 1),
+        "pending_xp": int(row["pending_xp"] or 0), "total_xp": int(row["char_xp"] or 0)
+    }
 
-    old_lvl = row.get("char_level") or row.get("realm_level",1)
-    old_xp  = int(row.get("char_xp") or 0)
-    new_xp  = old_xp + xp_gain
-    new_lvl = level_from_xp(new_xp)
-    leveled = new_lvl > old_lvl
+async def apply_levelup(gid, uid) -> dict:
+    """Spend pending XP to gain one level. Returns result dict."""
+    row = await db.pool.fetchrow(
+        "SELECT char_level,char_xp,pending_xp,class,spirit,constitution,vitality FROM rpg_characters WHERE guild_id=$1 AND user_id=$2",
+        gid, uid
+    )
+    if not row: return {"ok": False, "reason": "No character found."}
+    cur_lvl = int(row["char_level"] or 1)
+    if cur_lvl >= MAX_CHAR_LEVEL:
+        return {"ok": False, "reason": f"Already at max level ({MAX_CHAR_LEVEL})!"}
+    cost = xp_for_level(cur_lvl + 1) - xp_for_level(cur_lvl)
+    pending = int(row["pending_xp"] or 0)
+    if pending < cost:
+        return {"ok": False, "reason": f"Need **{cost:,} XP** to reach Lv.{cur_lvl+1} — you have **{pending:,}** pending XP."}
+    new_lvl = cur_lvl + 1
+    grw = CLASS_GROWTH.get(row["class"] or "Warrior", CLASS_GROWTH["Warrior"])
+    sa = grw["str"]; ca = grw["con"]; aa = grw["agi"]; spa = grw["spi"]; va = grw["vit"]
+    new_con = int(row["constitution"]) + ca
+    new_vit = int(row["vitality"]) + va
+    new_spi = int(row["spirit"]) + spa
+    new_hp = calc_hp(new_con, new_vit, new_lvl)
+    new_mn = calc_mana(new_spi, new_lvl)
+    await db.pool.execute("""
+        UPDATE rpg_characters SET
+            char_level=$1, pending_xp=pending_xp-$2,
+            strength=strength+$3, constitution=constitution+$4,
+            agility=agility+$5, spirit=spirit+$6, vitality=vitality+$7,
+            hp_max=$8, hp_current=$8, mana_max=$9, mana_current=$9,
+            stat_points=stat_points+2
+        WHERE guild_id=$10 AND user_id=$11
+    """, new_lvl, cost, sa, ca, aa, spa, va, new_hp, new_mn, gid, uid)
+    return {"ok": True, "new_level": new_lvl, "cost": cost, "grw": grw, "new_hp": new_hp, "new_mn": new_mn}
 
-    sql    = "UPDATE rpg_characters SET char_xp=$1,char_level=$2"
-    params = [new_xp, new_lvl]
-    i      = 3
-
-    if leveled:
-        grw = CLASS_GROWTH.get(row.get("class","Warrior"), CLASS_GROWTH["Warrior"])
-        levels_gained = new_lvl - old_lvl
-        sa = grw["str"]*levels_gained; ca = grw["con"]*levels_gained
-        aa = grw["agi"]*levels_gained; spa = grw["spi"]*levels_gained
-        va = grw["vit"]*levels_gained
-        sql += f",strength=strength+${i},constitution=constitution+${i+1},agility=agility+${i+2},spirit=spirit+${i+3},vitality=vitality+${i+4}"
-        params += [sa,ca,aa,spa,va]; i += 5
-        # Recalc HP/Mana
-        new_con = int(row["constitution"]+ca); new_vit = int(row["vitality"]+va)
-        new_spi = int(row["spirit"]+spa)
-        new_hp  = calc_hp(new_con, new_vit, new_lvl)
-        new_mn  = calc_mana(new_spi, new_lvl)
-        sql += f",hp_max=${i},hp_current=${i},mana_max=${i+1},mana_current=${i+1},stat_points=stat_points+2"
-        params += [new_hp,new_mn]; i += 2
-
-    sql += f" WHERE guild_id=${i} AND user_id=${i+1}"
-    params += [gid, uid]
-    await db.pool.execute(sql, *params)
-    return {"leveled_up":leveled,"new_level":new_lvl,"old_level":old_lvl,"total_xp":new_xp}
 
 # ── Visual helpers ─────────────────────────────────────────────────
 def _bar(cur, mx, n=12):
@@ -264,6 +280,7 @@ def char_embed(char: dict, member: discord.Member) -> discord.Embed:
         f"[MANA: {mn_c}/{mn_m}]\n"
         f"{_bar(mn_c,mn_m)} 💙\n"
         f"[EXP:  {xp_this}/{xp_this+xp_need}]\n"
+        f"[PEND: {char.get('pending_xp',0)} XP (levelup to spend)]\n"
         f"```"
     ), inline=True)
     sp = char.get("stat_points",0)
@@ -341,6 +358,46 @@ class RPGPanel(discord.ui.View):
                 kw.pop("delete_after",None)
                 return await i.channel.send(*a,**kw)
         await cog.dungeon(FC())
+
+    @discord.ui.button(label="🧪 Items",    style=discord.ButtonStyle.secondary, row=1)
+    async def items_btn(self,i,b):
+        """Use HP/Mana potions from inventory outside combat."""
+        import db as _db
+        POTION_KEYS = ["hp_potion_s","hp_potion_m","hp_potion_l","mana_potion","antidote","revival_orb"]
+        POTION_NAMES = {
+            "hp_potion_s":"🧪 Small HP Potion (+20% HP)",
+            "hp_potion_m":"🧪 Medium HP Potion (+40% HP)",
+            "hp_potion_l":"🧪 Large HP Potion (+70% HP)",
+            "mana_potion":"💙 Mana Potion (+30% Mana)",
+            "antidote":"🌿 Antidote (clears Venom/Burn)",
+            "revival_orb":"✨ Revival Orb (survive 1 lethal hit)",
+        }
+        owned = []
+        for key in POTION_KEYS:
+            qty = await _db.pool.fetchval(
+                "SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",
+                i.guild_id, i.user.id, key
+            ) or 0
+            if qty > 0:
+                owned.append((key, POTION_NAMES.get(key, key), qty))
+        if not owned:
+            return await i.response.send_message(
+                "🧪 No potions in inventory. Buy some with `/shop` → Potions tab!", ephemeral=True)
+        opts = [discord.SelectOption(
+            label=f"{name} (x{qty})", value=key,
+            description="Use this item now"
+        ) for key, name, qty in owned[:25]]
+        sel = discord.ui.Select(placeholder="Choose an item to use…", options=opts)
+        async def use_cb(inter2):
+            if inter2.user.id != i.user.id:
+                return await inter2.response.send_message("Not for you.", ephemeral=True)
+            await inter2.response.defer(ephemeral=True)
+            from airi.inventory import _use_item
+            await _use_item(inter2, i.guild_id, i.user.id, sel.values[0])
+        sel.callback = use_cb
+        sv = discord.ui.View(timeout=60); sv.add_item(sel)
+        await i.response.send_message(embed=discord.Embed(
+            description="Choose a potion to use:", color=0x2ecc71), view=sv, ephemeral=True)
 
     @discord.ui.button(label="🛒 Shop",     style=discord.ButtonStyle.secondary, row=1)
     async def shop_btn(self,i,b):
@@ -552,13 +609,7 @@ class RPGStatsCog(commands.Cog, name="RPG"):
         await ctx.send(embed=char_embed(char,ctx.author),
                        view=RPGPanel(char,ctx.author,sk,eq,ctx.author.id))
 
-    @rpg.command(name="stats")
-    async def rpg_stats(self,ctx,member:discord.Member=None):
-        t=member or ctx.author
-        char=await get_char(ctx.guild.id,t.id)
-        if not char: return await ctx.send(embed=discord.Embed(description="No character yet.",color=0xf39c12))
-        sk=await get_skills(ctx.guild.id,t.id); eq=await get_equipment(ctx.guild.id,t.id)
-        await ctx.send(embed=char_embed(char,t),view=RPGPanel(char,t,sk,eq,ctx.author.id))
+    # /rpg stats removed — /rpg alone shows the full character panel
 
     @rpg.command(name="allocate")
     async def rpg_allocate(self,ctx):
@@ -568,6 +619,49 @@ class RPGStatsCog(commands.Cog, name="RPG"):
         panel=RPGPanel(char,ctx.author,await get_skills(ctx.guild.id,ctx.author.id),await get_equipment(ctx.guild.id,ctx.author.id),ctx.author.id)
         v=AllocView(char,ctx.author,ctx.guild.id,parent=panel)
         await ctx.send(embed=v._embed(),view=v)
+
+    @rpg.command(name="levelup", description="Spend collected XP to level up")
+    async def rpg_levelup(self, ctx):
+        char = await get_char(ctx.guild.id, ctx.author.id)
+        if not char:
+            return await ctx.send(embed=discord.Embed(description="No character. Use `/rpg`.", color=0xf39c12))
+        pending = int(char.get("pending_xp", 0) or 0)
+        cur_lvl = int(char.get("char_level", 1))
+        if cur_lvl >= MAX_CHAR_LEVEL:
+            return await ctx.send(embed=discord.Embed(description=f"Already at max level ({MAX_CHAR_LEVEL})!", color=0xf39c12))
+        cost = xp_for_level(cur_lvl + 1) - xp_for_level(cur_lvl)
+        if pending < cost:
+            e = discord.Embed(
+                title="⬆️ Level Up",
+                description=(
+                    f"**Current Level:** {cur_lvl}\n"
+                    f"**Pending XP:** {pending:,}\n"
+                    f"**XP needed for Lv.{cur_lvl+1}:** {cost:,}\n\n"
+                    f"Still need **{cost-pending:,}** XP. Run dungeons to collect more!"
+                ),
+                color=0xf39c12,
+            )
+            return await ctx.send(embed=e)
+        result = await apply_levelup(ctx.guild.id, ctx.author.id)
+        if not result["ok"]:
+            return await ctx.send(embed=discord.Embed(description=result["reason"], color=0xe74c3c))
+        char = await get_char(ctx.guild.id, ctx.author.id)
+        sk = await get_skills(ctx.guild.id, ctx.author.id)
+        eq = await get_equipment(ctx.guild.id, ctx.author.id)
+        grw = result["grw"]
+        e = char_embed(char, ctx.author)
+        e.title = f"\u2b06\ufe0f LEVEL UP! \u2192 Lv.{result['new_level']}"
+        e.color = 0x2ecc71
+        e.add_field(
+            name="Stats Gained",
+            value=(
+                f"STR+{grw['str']} CON+{grw['con']} AGI+{grw['agi']} "
+                f"SPI+{grw['spi']} VIT+{grw['vit']}\n"
+                f"New HP: {result['new_hp']} | New Mana: {result['new_mn']} (+2 stat pts)"
+            ),
+            inline=False,
+        )
+        await ctx.send(embed=e, view=RPGPanel(char, ctx.author, sk, eq, ctx.author.id))
 
     @rpg.command(name="leaderboard")
     async def rpg_lb(self,ctx):

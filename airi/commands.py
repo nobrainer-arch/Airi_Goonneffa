@@ -238,6 +238,9 @@ class RecipientSelect(discord.ui.UserSelect):
                 tg      = await get_gender(str(member.id)) or "u"
                 raw     = _get_action_text(self._cmd, ag, tg)
                 action  = raw.format(author=interaction.user.display_name, target=member.mention)
+                # Append any pending text from the original command invocation
+                pending_txt = getattr(self.view, "pending_text", "") if self.view else ""
+                if pending_txt: action = action.rstrip("!.~") + " " + pending_txt.strip()
                 gif_url, _ = await get_gif(self._cmd, self._is_nsfw, user_id=getattr(interaction,"user",None) and interaction.user.id)
                 if not gif_url:
                     await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
@@ -275,8 +278,9 @@ class RecipientSelect(discord.ui.UserSelect):
 
 
 class RecipientView(discord.ui.View):
-    def __init__(self, cmd: str, author_id: int, bot, is_nsfw: bool):
+    def __init__(self, cmd: str, author_id: int, bot, is_nsfw: bool, pending_text: str = ""):
         super().__init__(timeout=300)
+        self.pending_text = pending_text
         max_v = config.MULTI_TARGET_COMMANDS.get(cmd, 1)
         self.add_item(RecipientSelect(cmd, author_id, bot, is_nsfw, max_v))
 
@@ -400,40 +404,64 @@ def setup_commands(bot, commands_data: dict | None = None):
 
         def make_command(name=cmd_name, nsfw=is_nsfw, solo=has_solo):
             @commands.command(name=name, aliases=aliases[:10], description=desc)
-            async def _cmd(ctx, target: discord.Member = None, *, text: str = ""):
-                # text = flavor/extra words, e.g. "!hug @mark tightly" or "!cry why me"
-                # If no target and not a solo command, show picker
+            async def _cmd(ctx, *, raw_args: str = ""):
+                """
+                Parses args manually so any combination works:
+                  !cry woah           → text="woah", no target → show picker
+                  !cry @user woah     → target=@user, text="woah"
+                  !hi (reply to msg)  → target=replied-to user, no picker
+                  !hi woah            → text="woah", show picker
+                """
+                import re
+                target: discord.Member | None = None
+                text: str = raw_args.strip()
+
+                # ── 1. Reply reference takes priority as target ──────────
+                if ctx.message.reference:
+                    try:
+                        ref = ctx.message.reference.resolved
+                        if ref is None:
+                            ref = await ctx.channel.fetch_message(ctx.message.reference.message_id)
+                        if ref and hasattr(ref, "author") and not ref.author.bot:
+                            target = ctx.guild.get_member(ref.author.id) or ref.author
+                    except Exception:
+                        pass
+
+                # ── 2. If explicit @mention in args, use it as target ────
+                if target is None and ctx.message.mentions:
+                    target = ctx.message.mentions[0]
+                    # Remove the mention from the text so it's clean flavor
+                    text = re.sub(r"<@!?\d+>", "", raw_args, count=1).strip()
+
+                # ── 3. Dispatch ──────────────────────────────────────────
                 if target is None:
-                    # Commands in SOLO_COMMANDS always do solo action
-                    # Other commands: always show picker (even if they have solo text)
                     if name in config.SOLO_COMMANDS:
+                        # Solo commands always run without a target
                         raw    = _get_solo_text(name)
                         action = raw.format(author=ctx.author.display_name, target="")
-                        if text: action = action.rstrip("!.~") + " " + text.strip()
-                        gif_url, _ = await get_gif(name, nsfw, user_id=getattr(ctx,"author",None) and ctx.author.id)
+                        if text: action = action.rstrip("!.~") + " " + text
+                        gif_url, _ = await get_gif(name, nsfw, user_id=ctx.author.id)
                         if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
                         e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=ctx.author)
                         return await ctx.send(embed=e)
                     else:
-                        # Show recipient picker for ALL commands with targets
-                        view = RecipientView(name, ctx.author.id, ctx.bot, nsfw)
+                        # Show recipient picker; carry any flavor text for after selection
+                        view = RecipientView(name, ctx.author.id, ctx.bot, nsfw, pending_text=text)
                         e = discord.Embed(
-                            description=f"Who do you want to `{name}`?",
+                            description=f"Who do you want to `{name}`?" + (f'  *"{text}"*' if text else ""),
                             color=C_SOCIAL
                         )
                         return await ctx.send(embed=e, view=view)
 
-                # Has target
+                # ── 4. Has target — validate ─────────────────────────────
                 if target == ctx.author: return await _err(ctx, "You can't target yourself.")
-                if target.bot: return await _err(ctx, "Bots can't be targeted.")
+                if target.bot:           return await _err(ctx, "Bots can't be targeted.")
 
                 # NSFW checks
                 if nsfw:
                     if await db.pool.fetchval("SELECT 1 FROM nsfw_optout WHERE guild_id=$1 AND user_id=$2",
                                               ctx.guild.id, target.id):
                         return await _err(ctx, f"**{target.display_name}** has NSFW opt-out.")
-
-                    # Check if target is partner/claimed; if not, send consent request
                     gid, uid, tid = ctx.guild.id, ctx.author.id, target.id
                     is_partner = await db.pool.fetchval("""
                         SELECT 1 FROM relationships
@@ -461,7 +489,6 @@ def setup_commands(bot, commands_data: dict | None = None):
                         except discord.Forbidden:
                             return await _err(ctx, f"Couldn't DM {target.mention}. They may have DMs disabled.")
                 else:
-                    # SFW: check rpblock
                     if await db.pool.fetchval(
                         "SELECT 1 FROM rpblock WHERE guild_id=$1 AND user_id=$2 AND blocked_id=$3",
                         ctx.guild.id, target.id, ctx.author.id
@@ -473,8 +500,8 @@ def setup_commands(bot, commands_data: dict | None = None):
                 tg = await get_gender(str(target.id))     or "u"
                 raw     = _get_action_text(name, ag, tg)
                 action  = raw.format(author=ctx.author.display_name, target=target.mention)
-                if text: action = action.rstrip("!.~") + " " + text.strip()
-                gif_url, _ = await get_gif(name, nsfw, user_id=getattr(ctx,"author",None) and ctx.author.id)
+                if text: action = action.rstrip("!.~") + " " + text
+                gif_url, _ = await get_gif(name, nsfw, user_id=ctx.author.id)
                 if not gif_url: return await _err(ctx, "Couldn't fetch a GIF right now.")
                 e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=target)
                 view = BackView(name, target.id, ctx.author.id, ctx.bot) if name in config.BACK_ACTIONS else None
@@ -483,23 +510,6 @@ def setup_commands(bot, commands_data: dict | None = None):
                 if ag == "u":
                     await ctx.send(f"💡 {ctx.author.mention} set your gender with `!gender`", delete_after=10)
 
-            @_cmd.error
-            async def _cmd_err(ctx, error):
-                # Member conversion fails for freeform text like "!cry why me"
-                if isinstance(error, (commands.BadArgument, commands.MemberNotFound)):
-                    # Extract the full message after the command name as flavor text
-                    parts = ctx.message.content.split(None, 1)
-                    flavor = parts[1].strip() if len(parts) > 1 else ""
-                    raw    = _get_solo_text(name) or _get_action_text(name,"u","u")
-                    action = raw.format(author=ctx.author.display_name, target="")
-                    if flavor: action = action.rstrip("!.~") + " " + flavor
-                    gif_url, _ = await get_gif(name, is_nsfw, user_id=ctx.author.id)
-                    if not gif_url:
-                        return await _err(ctx, "Couldn't fetch a GIF right now.")
-                    e = await _build_embed(ctx.bot, ctx, action, gif_url, name, ctx.author, target_member=ctx.author)
-                    await ctx.send(embed=e)
-                else:
-                    raise error
             return _cmd
 
         cmd_obj = make_command()
