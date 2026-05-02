@@ -415,6 +415,80 @@ class RPGPanel(discord.ui.View):
         shop_view._rebuild()
         await msg.edit(embed=shop_view._embed(), view=shop_view)
 
+    @discord.ui.button(label="⬆️ Level Up",  style=discord.ButtonStyle.success,   row=2)
+    async def levelup_btn(self,i,b):
+        if i.user.id != self._m.id:
+            return await i.response.send_message("Only your character.", ephemeral=True)
+        char = await get_char(i.guild_id, i.user.id)
+        if not char:
+            return await i.response.send_message("No character found.", ephemeral=True)
+        pending  = int(char.get("pending_xp", 0) or 0)
+        cur_lvl  = int(char.get("char_level", 1))
+        if cur_lvl >= MAX_CHAR_LEVEL:
+            return await i.response.send_message(f"Already at max level ({MAX_CHAR_LEVEL})!", ephemeral=True)
+        cost = xp_for_level(cur_lvl + 1) - xp_for_level(cur_lvl)
+        if pending < cost:
+            e = discord.Embed(
+                title="⬆️ Level Up",
+                description=(
+                    f"**Level:** {cur_lvl}  ·  **Pending XP:** {pending:,}\n"
+                    f"Need **{cost:,} XP** for Lv.{cur_lvl+1} — still **{cost-pending:,}** short.\n"
+                    f"Run dungeons to collect XP!"
+                ),
+                color=0xf39c12,
+            )
+            return await i.response.send_message(embed=e, ephemeral=True)
+        result = await apply_levelup(i.guild_id, i.user.id)
+        if not result["ok"]:
+            return await i.response.send_message(result["reason"], ephemeral=True)
+        # Refresh panel
+        char = await get_char(i.guild_id, i.user.id)
+        sk   = await get_skills(i.guild_id, i.user.id)
+        eq   = await get_equipment(i.guild_id, i.user.id)
+        self._c = char; self._sk = sk; self._eq = eq
+        grw = result["grw"]
+        e = char_embed(char, self._m)
+        e.title = f"⬆️ LEVEL UP! → Lv.{result['new_level']}"
+        e.color  = 0x2ecc71
+        e.add_field(
+            name="Stats Gained",
+            value=(
+                f"STR+{grw['str']} CON+{grw['con']} AGI+{grw['agi']} "
+                f"SPI+{grw['spi']} VIT+{grw['vit']}\n"
+                f"HP:{result['new_hp']} | Mana:{result['new_mn']} (+2 stat pts)"
+            ),
+            inline=False,
+        )
+        await i.response.edit_message(embed=e, view=self)
+
+    @discord.ui.button(label="🏆 Ranks",    style=discord.ButtonStyle.secondary, row=2)
+    async def ranks_btn(self, i, b):
+        await i.response.defer()
+        cog = i.client.cogs.get("RPGStats")
+        if not cog:
+            return await i.edit_original_response(
+                embed=discord.Embed(description="Leaderboard unavailable.", color=0xe74c3c), view=self)
+        class FC:
+            guild=i.guild; author=i.user; channel=i.channel; bot=i.client
+            async def send(self_, *a, **kw):
+                kw.pop("delete_after", None)
+                return await i.channel.send(*a, **kw)
+        await cog.rpg_leaderboard(FC())
+
+    @discord.ui.button(label="🗺️ Market",   style=discord.ButtonStyle.secondary, row=2)
+    async def market_btn(self, i, b):
+        await i.response.defer()
+        cog = i.client.cogs.get("RPGMarket")
+        if not cog:
+            return await i.edit_original_response(
+                embed=discord.Embed(description="Market unavailable.", color=0xe74c3c), view=self)
+        class FC:
+            guild=i.guild; author=i.user; channel=i.channel; bot=i.client
+            async def send(self_, *a, **kw):
+                kw.pop("delete_after", None)
+                return await i.channel.send(*a, **kw)
+        await cog.market(FC())
+
     @discord.ui.button(label="⚔️ Guild",    style=discord.ButtonStyle.secondary, row=2)
     async def guild_btn(self,i,b):
         await i.response.defer()
@@ -663,7 +737,7 @@ class RPGStatsCog(commands.Cog, name="RPG"):
         )
         await ctx.send(embed=e, view=RPGPanel(char, ctx.author, sk, eq, ctx.author.id))
 
-    @rpg.command(name="leaderboard")
+    @rpg.command(name="leaderboard", description="RPG leaderboard (also in /rpg → 🏆 Ranks)")
     async def rpg_lb(self,ctx):
         rows=await db.pool.fetch("""
             SELECT user_id,class,realm_level,(strength+constitution+agility+spirit+vitality) AS power

@@ -188,6 +188,8 @@ async def setup_hook():
         RPGStatsCog, DungeonCog, GuildSystemCog, MarketCog, RPGShopCog,
         # Consolidated hub commands
         EconomyHub, SocialHub, LeaderboardHub, ServerHub,
+        # Translator + Games (were imported but never loaded)
+        TranslatorCog, GamesCog,
     ]:
         await bot.add_cog(cog_cls(bot))
 
