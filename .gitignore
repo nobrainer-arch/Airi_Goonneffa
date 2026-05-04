@@ -8,3 +8,5 @@ venv/
 .vscode/
 .idea/
 shatterchat/
+local_render.py
+railway_local.py
