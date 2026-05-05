@@ -9,43 +9,31 @@ from utils import C_INFO, C_SUCCESS, C_WARN, _err
 from .classes import CLASSES, RANK_EMOJI, RANK_COLORS, get_realm, str_label
 
 # ── XP Table ───────────────────────────────────────────────────────
-XP_TABLE = [
-    0,300,900,2700,6500,14000,23000,34000,48000,64000,    # 1–10
-    85000,100000,120000,140000,165000,195000,225000,265000,305000,355000, # 11–20
-    425000,495000,570000,650000,735000,820000,915000,1015000,1120000,1230000, # 21–30
-]
+# XP curve — smooth parametric formula, no arbitrary lookup table.
+# References: Davide Aversa GameDesign Math, Galaxy manhwa level gate design
+# Target feel: Lv1→2 ≈ 1 run | Lv5→6 ≈ 3 runs | Lv10→11 ≈ 8 runs
+#              Lv20→21 ≈ 15 runs | Lv50→51 ≈ 40 runs
+# Formula: cumulative XP to reach level N = int(200 × N^2.1)
+# XP needed for level N→N+1 = cumulative(N+1) - cumulative(N)
+# Average T1 run ≈ 540 XP, scales with tier/difficulty
+
 MAX_CHAR_LEVEL = 100
 
-def _xp_for_level_100(lvl: int) -> int:
-    """Total XP to reach level `lvl`. Extends the 30-entry table up to 100."""
-    if lvl <= 1: return 0
-    idx = lvl - 1
-    if idx < len(XP_TABLE): return XP_TABLE[idx]
-    return int(XP_TABLE[-1] * (1.18 ** (lvl - len(XP_TABLE))))
-
 def xp_for_level(lvl: int) -> int:
+    """Total cumulative XP needed to reach `lvl`."""
     if lvl <= 1: return 0
-    return _xp_for_level_100(lvl)
+    return int(200 * (lvl ** 2.1))
 
 def level_from_xp(xp: int) -> int:
-    # Binary search for levels beyond table
     if xp <= 0: return 1
-    # Check table first
     lvl = 1
-    for i, t in enumerate(XP_TABLE):
-        if xp >= t: lvl = i+1
-    # If at max table level, check extended
-    if lvl >= len(XP_TABLE):
-        for test_lvl in range(len(XP_TABLE)+1, 101):
-            if xp >= _xp_for_level_100(test_lvl):
-                lvl = test_lvl
-            else:
-                break
-    return min(lvl, MAX_CHAR_LEVEL)
+    while lvl < MAX_CHAR_LEVEL and xp >= xp_for_level(lvl + 1):
+        lvl += 1
+    return lvl
 
-def xp_to_next(xp: int) -> tuple[int,int]:
+def xp_to_next(xp: int) -> tuple[int, int]:
     lvl    = level_from_xp(xp)
-    nxt    = XP_TABLE[min(lvl, MAX_CHAR_LEVEL-1)]
+    nxt    = xp_for_level(lvl + 1) if lvl < MAX_CHAR_LEVEL else xp_for_level(MAX_CHAR_LEVEL)
     needed = max(0, nxt - xp)
     return lvl, needed
 
@@ -671,28 +659,29 @@ class RPGStatsCog(commands.Cog, name="RPG"):
         except Exception as e:
             print(f"HP regen task error: {e}")
 
-    @commands.hybrid_group(name="rpg",description="RPG character system",invoke_without_command=True)
-    async def rpg(self,ctx):
-        char=await get_char(ctx.guild.id,ctx.author.id)
+    @commands.hybrid_group(name="rpg", description="RPG character system — stats, skills, level up", invoke_without_command=True)
+    async def rpg(self, ctx):
+        char = await get_char(ctx.guild.id, ctx.author.id)
         if not char:
-            v=ClassSelectView(ctx.author.id,ctx.guild.id)
+            v = ClassSelectView(ctx.author.id, ctx.guild.id)
             return await ctx.send(embed=discord.Embed(title="⚔️ Create Your Character",
-                description="Browse classes with ◀▶ then choose your race!",color=0x5d6bb5),view=v)
-        sk=await get_skills(ctx.guild.id,ctx.author.id)
-        eq=await get_equipment(ctx.guild.id,ctx.author.id)
-        await ctx.send(embed=char_embed(char,ctx.author),
-                       view=RPGPanel(char,ctx.author,sk,eq,ctx.author.id))
+                description="Browse classes with ◀▶ then choose your race!", color=0x5d6bb5), view=v)
+        sk = await get_skills(ctx.guild.id, ctx.author.id)
+        eq = await get_equipment(ctx.guild.id, ctx.author.id)
+        await ctx.send(embed=char_embed(char, ctx.author),
+                       view=RPGPanel(char, ctx.author, sk, eq, ctx.author.id))
 
-    # /rpg stats removed — /rpg alone shows the full character panel
-
-    @rpg.command(name="allocate")
-    async def rpg_allocate(self,ctx):
-        char=await get_char(ctx.guild.id,ctx.author.id)
-        if not char: return await ctx.send(embed=discord.Embed(description="No character. Use `/rpg`.",color=0xf39c12))
-        if not char.get("stat_points"): return await ctx.send(embed=discord.Embed(description="No free points. Level up to earn more!",color=0xf39c12))
-        panel=RPGPanel(char,ctx.author,await get_skills(ctx.guild.id,ctx.author.id),await get_equipment(ctx.guild.id,ctx.author.id),ctx.author.id)
-        v=AllocView(char,ctx.author,ctx.guild.id,parent=panel)
-        await ctx.send(embed=v._embed(),view=v)
+    @rpg.command(name="allocate", description="Allocate free stat points to your character")
+    async def rpg_allocate(self, ctx):
+        char = await get_char(ctx.guild.id, ctx.author.id)
+        if not char:
+            return await ctx.send(embed=discord.Embed(description="No character. Use `/rpg`.", color=0xf39c12))
+        if not char.get("stat_points"):
+            return await ctx.send(embed=discord.Embed(description="No free points. Level up to earn more!", color=0xf39c12))
+        panel = RPGPanel(char, ctx.author, await get_skills(ctx.guild.id, ctx.author.id),
+                         await get_equipment(ctx.guild.id, ctx.author.id), ctx.author.id)
+        v = AllocView(char, ctx.author, ctx.guild.id, parent=panel)
+        await ctx.send(embed=v._embed(), view=v)
 
     @rpg.command(name="levelup", description="Spend collected XP to level up")
     async def rpg_levelup(self, ctx):

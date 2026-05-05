@@ -15,6 +15,7 @@ from .char   import (get_char, get_skills, get_equipment, add_char_xp, add_pendi
 from .classes import CLASSES
 from .skills  import SKILL_DB
 from .battle_image import generate_battle_card
+from .quests import calc_run_rating, RATING_EMOJI, RATING_COLOR, check_quest_progress
 
 DND_API     = "https://www.dnd5eapi.co/api"
 BASE_CD     = 60      # 1 minute cooldown
@@ -251,15 +252,18 @@ async def _luck(gid,uid):
     rows = await db.pool.fetch("SELECT effect_key,effect_value FROM rpg_equipment WHERE guild_id=$1 AND user_id=$2",gid,uid)
     return min(1.0, sum(float(r.get("effect_value",0) or 0) for r in rows if "luck" in str(r.get("effect_key","")).lower()))
 
-async def _drop_item(gid, uid, tier, is_boss, luck):
-    drops = MONSTER_DROPS.get(tier,MONSTER_DROPS[1])
-    chance = (0.40+luck*0.3) if is_boss else (0.12+luck*0.12)
-    if random.random() > chance: return None
-    key,name = random.choice(drops)
+async def _drop_item(gid, uid, tier, is_boss, luck, greedy_bonus: float = 0.0):
+    drops = MONSTER_DROPS.get(tier, MONSTER_DROPS[1])
+    # [BUG-2] Greedy Hand passive_extra_loot now applied here
+    base_chance = (0.40 + luck * 0.3) if is_boss else (0.12 + luck * 0.12)
+    chance = min(0.95, base_chance + greedy_bonus)
+    if random.random() > chance:
+        return None
+    key, name = random.choice(drops)
     await db.pool.execute(
         "INSERT INTO inventory (guild_id,user_id,item_key,quantity) VALUES ($1,$2,$3,1) "
         "ON CONFLICT (guild_id,user_id,item_key) DO UPDATE SET quantity=inventory.quantity+1",
-        gid,uid,key)
+        gid, uid, key)
     return name
 
 async def _drop_chest(gid, uid, tier):
@@ -270,25 +274,53 @@ async def _drop_chest(gid, uid, tier):
         gid,uid,key)
     return name
 
-def _build_pc(char) -> CombatUnit:
-    cls  = CLASSES.get(char["class"],{})
-    clvl = char.get("char_level",char.get("realm_level",1))
-    con  = char.get("constitution",10); vit=char.get("vitality",10); spi=char.get("spirit",10)
-    hp   = calc_hp(con,vit,clvl); mn=calc_mana(spi,clvl)
+def _build_pc(char, eq=None) -> CombatUnit:
+    cls  = CLASSES.get(char["class"], {})
+    clvl = char.get("char_level", char.get("realm_level", 1))
+    con  = char.get("constitution", 10)
+    vit  = char.get("vitality", 10)
+    spi  = char.get("spirit", 10)
+    hp   = calc_hp(con, vit, clvl)
+    mn   = calc_mana(spi, clvl)
+
+    # [MISSING-6] Read equipment stat bonuses
+    eq_str = eq_con = eq_agi = eq_spi = 0
+    eq_crit = eq_dr = eq_luck = 0.0
+    for item in (eq or []):
+        k = (item.get("effect_key") or "").lower()
+        v = float(item.get("effect_value") or 0)
+        if "str" in k:          eq_str  += int(v)
+        elif "con" in k:        eq_con  += int(v)
+        elif "agi" in k:        eq_agi  += int(v)
+        elif "spi" in k:        eq_spi  += int(v)
+        elif "crit" in k:       eq_crit += v
+        elif "dmg_red" in k or "defense" in k: eq_dr += v
+
+    # Class natural element
+    CLASS_ELEMENT = {
+        "Mage":"fire","Shadow":"dark","Necromancer":"dark",
+        "Knight":"holy","Healer":"holy","Archer":"physical",
+        "Warrior":"physical","Gunman":"physical",
+    }
+
     return CombatUnit(
         name=char["class"],
-        hp=min(char.get("hp_current",hp),hp), hp_max=hp,
-        mana=min(char.get("mana_current",mn),mn), mana_max=mn,
-        strength=char.get("strength",10), constitution=con,
-        agility=char.get("agility",10), spirit=spi, reaction=spi,
-        crit_chance=cls.get("base",{}).get("crit_chance",0.08),
+        hp=min(char.get("hp_current", hp), hp), hp_max=hp,
+        mana=min(char.get("mana_current", mn), mn), mana_max=mn,
+        strength=char.get("strength", 10) + eq_str,
+        constitution=con + eq_con,
+        agility=char.get("agility", 10) + eq_agi,
+        spirit=spi + eq_spi,
+        reaction=spi,
+        crit_chance=min(0.80, cls.get("base", {}).get("crit_chance", 0.08) + eq_crit),
         crit_damage=1.5,
-        damage_reduction=cls.get("base",{}).get("damage_reduction",0.05),
-        reflect_pct=0.10 if char["class"]=="Knight" else 0.0,
+        damage_reduction=min(0.80, cls.get("base", {}).get("damage_reduction", 0.05) + eq_dr),
+        reflect_pct=0.10 if char["class"] == "Knight" else 0.0,
         grade="Normal", is_player=True,
         class_name=char["class"],
-        first_hit_active=char["class"]=="Gunman",
-        first_hit_bonus=0.5 if char["class"]=="Gunman" else 0.0,
+        element=CLASS_ELEMENT.get(char["class"], "physical"),
+        first_hit_active=char["class"] == "Gunman",
+        first_hit_bonus=0.5 if char["class"] == "Gunman" else 0.0,
     )
 
 def _build_mc(m) -> CombatUnit:
@@ -316,7 +348,7 @@ def _sk_img(sdb, engine:BattleEngine):
 # DungeonRun state
 # ─────────────────────────────────────────────────────────────────
 class DungeonRun:
-    def __init__(self,char,skills_db,eq,diff,tier,dname):
+    def __init__(self, char, skills_db, eq, diff, tier, dname):
         self.char=char; self.skills_db=skills_db; self.eq=eq
         self.diff=diff; self.tier=tier; self.dname=dname
         layout=TIER_LAYOUT[tier]
@@ -324,10 +356,19 @@ class DungeonRun:
         self.current_floor=0
         self.xp=0; self.cxp=0; self.coins=0; self.kak=0; self.gems=0
         self.grades=[]; self.drops=[]; self.cd_item=False; self.fled=False
-        self.pc=_build_pc(char)
+        # Run rating trackers [NEW — quests.calc_run_rating]
+        self.potions_used = 0
+        self.eye_breaks   = 0
+        self.total_turns  = 0
+        self.run_rating   = "D"
+        self.pc = _build_pc(char, eq)
+
+    def next_floor(self):
+        """[BUG-5] Call between floors — clears debuffs, keeps buffs."""
+        self.pc.clear_between_floors()
 
     @property
-    def is_boss(self): return self.current_floor==self.total_floors
+    def is_boss(self): return self.current_floor == self.total_floors
     def pbar(self):
         done=self.current_floor-1
         cells=[]
@@ -345,19 +386,27 @@ class DungeonRun:
 # FloorBattleView
 # ─────────────────────────────────────────────────────────────────
 class FloorBattleView(discord.ui.View):
-    def __init__(self,ctx,run,monster,gid,uid):
+    def __init__(self, ctx, run, monster, gid, uid):
         super().__init__(timeout=300)
         self._ctx=ctx; self._run=run; self._m=monster
         self._gid=gid; self._uid=uid
         self._log=[]; self._running=True; self._turn=0
-        mc=_build_mc(monster)
-        self._eng=BattleEngine(run.pc,mc)
-        if run.current_floor==1:
+        mc = _build_mc(monster)
+        self._eng = BattleEngine(run.pc, mc)
+        if run.current_floor == 1:
             for ln in self._eng.apply_passive_defense(run.skills_db):
                 self._log.append(ln)
-        cls=CLASSES.get(run.char["class"],{}); c=cls.get("color",0x4444ff)
-        self._cr=((c>>16)&0xff,(c>>8)&0xff,c&0xff)
-        self._mc=monster.get("color",(200,50,50))
+        cls = CLASSES.get(run.char["class"], {}); c = cls.get("color", 0x4444ff)
+        self._cr = ((c>>16)&0xff, (c>>8)&0xff, c&0xff)
+        self._mc = monster.get("color", (200,50,50))
+
+        # [BUG-4] Remove Stealth button for non-Shadow classes
+        char_class = run.char.get("class", "")
+        if char_class != "Shadow":
+            for item in self.children[:]:
+                if getattr(item, "custom_id", "") == "stealth_btn":
+                    self.remove_item(item)
+                    break
 
     def _embed(self,extra=""):
         run=self._run; p=self._eng.player; m=self._eng.monster
@@ -411,70 +460,89 @@ class FloorBattleView(discord.ui.View):
         ok=self._running and self._eng.player.alive
         for c in self.children: c.disabled=not ok
 
-    async def _proc(self,inter,action,sname="",mult=1.0,magic=False,eff=None):
-        self._turn+=1
-        res=self._eng.process_player_action(action,sname,mult,magic,eff or {})
-        for ln in res.get("log",[]): self._log.append(ln)
+    async def _proc(self, inter, action, sname="", mult=1.0, magic=False, eff=None, hits=1, element=""):
+        self._turn += 1
+        self._run.total_turns += 1
+        res = self._eng.process_player_action(action, sname, mult, magic, eff or {}, hits=hits, element=element)
+        for ln in res.get("log", []): self._log.append(ln)
+        # Track eye breaks for run rating
+        if res.get("eye_break"):
+            self._run.eye_breaks += 1
         if res.get("fled"):
-            self._running=False; self._run.fled=True
-            for c in self.children: c.disabled=True
-            f=await self._render()
-            e=self._embed("🏃 You **fled** the dungeon!")
-            await inter.edit_original_response(embed=e,attachments=[f],view=self)
+            self._running = False; self._run.fled = True
+            for c in self.children: c.disabled = True
+            f = await self._render()
+            e = self._embed("🏃 You **fled** the dungeon!")
+            await inter.edit_original_response(embed=e, attachments=[f], view=self)
             return
-        if not res.get("monster_alive",True):
-            self._running=False
+        if not res.get("monster_alive", True):
+            self._running = False
             await self._win(inter); return
-        if not res.get("player_alive",True):
-            self._running=False
+        if not res.get("player_alive", True):
+            self._running = False
             await self._lose(inter); return
         self._upd()
-        f=await self._render()
-        await inter.edit_original_response(embed=self._embed(),attachments=[f],view=self)
+        f = await self._render()
+        await inter.edit_original_response(embed=self._embed(), attachments=[f], view=self)
 
-    async def _win(self,inter):
+    async def _win(self, inter):
         run=self._run; gid=self._gid; uid=self._uid
-        luck=await _luck(gid,uid)
-        grade=_roll_loot(run.diff,luck,is_boss=run.is_boss)
+        luck=await _luck(gid, uid)
+        grade=_roll_loot(run.diff, luck, is_boss=run.is_boss)
         rwd=GRADE_REWARDS[grade]
         coins=random.randint(*rwd["coins"])
         kak=int(self._m.get("kakera",1)*DIFFICULTIES.get(run.diff,{}).get("loot",1))
         gems=rwd["gems"]+(1 if self._m.get("gem_drop") else 0)
         cxp=int(self._m.get("char_xp",50)*DIFFICULTIES.get(run.diff,{}).get("xp",1))
-        # Item drops
-        drop=await _drop_item(gid,uid,run.tier,run.is_boss,luck)
+        # Item drops — [BUG-2] Greedy Hand passive_extra_loot applied
+        greedy = self._eng.player.passive_extra_loot
+        drop=await _drop_item(gid, uid, run.tier, run.is_boss, luck, greedy_bonus=greedy)
         chest=None
         if run.is_boss:
-            chest=await _drop_chest(gid,uid,run.tier)
+            chest=await _drop_chest(gid, uid, run.tier)
             cc=0.05+luck*0.05
             if random.random()<cc:
                 run.cd_item=True
                 ch=await db.pool.fetchval("SELECT cd_remover_charges FROM rpg_characters WHERE guild_id=$1 AND user_id=$2",gid,uid) or 0
                 if ch<MAX_CD_USES:
                     await db.pool.execute("UPDATE rpg_characters SET cd_remover_charges=cd_remover_charges+1 WHERE guild_id=$1 AND user_id=$2",gid,uid)
-        # Accum
         run.coins+=coins; run.kak+=kak; run.gems+=gems; run.cxp+=cxp
         run.xp+=int(self._m.get("xp",50)); run.grades.append(grade)
-        if drop:   run.drops.append("📦 "+drop)
-        if chest:  run.drops.append("🎁 [Chest] "+chest)
+        if drop:  run.drops.append("📦 "+drop)
+        if chest: run.drops.append("🎁 [Chest] "+chest)
         for c in self.children: c.disabled=True
         f=await self._render()
         drop_txt=""
         if drop:  drop_txt+="\n📦 **"+drop+"** dropped!"
         if chest: drop_txt+="\n🎁 **[Chest]** "+chest+"!"
         if run.is_boss:
+            # Compute final run rating [NEW]
+            hp_pct = self._eng.player.hp / max(self._eng.player.hp_max, 1)
+            run.run_rating = calc_run_rating(
+                run.total_floors, run.total_floors, hp_pct,
+                run.total_turns, run.potions_used, run.eye_breaks)
+            rating_badge = RATING_EMOJI.get(run.run_rating, "")
             e=self._embed(
-                "✅ **BOSS DEFEATED!** ["+grade+" Grade]\n"
-                "+"+str(coins)+" 🪙  ·  +"+str(kak)+" 💎  ·  +"+str(cxp)+" XP"
-                +(("  ·  +"+str(gems)+" gems") if gems else "")
+                f"✅ **BOSS DEFEATED!** [{grade} Grade] {rating_badge} **{run.run_rating}-Rank** clear!\n"
+                f"+{coins} 🪙  ·  +{kak} 💎  ·  +{cxp} XP"
+                +(f"  ·  +{gems} gems" if gems else "")
                 +drop_txt
                 +("\n⏱️ Found **Cooldown Remover!**" if run.cd_item else "")
             )
             e.title="🏆 DUNGEON COMPLETE — "+run.dname+"!"
-            e.color=0xffd700
-            await inter.edit_original_response(embed=e,attachments=[f],view=self)
+            e.color=RATING_COLOR.get(run.run_rating, 0xffd700)
+            await inter.edit_original_response(embed=e, attachments=[f], view=self)
             await self._finalize(inter)
         else:
+            # [BUG-5] Reset debuffs between floors
+            run.next_floor()
+            # Quest: kill_mob for every non-boss kill
+            try:
+                qcog = inter.client.cogs.get("Quests")
+                if qcog:
+                    await qcog.award_quest_progress(gid, uid, "kill_mob")
+            except Exception:
+                pass
             nf=run.current_floor+1
             boss_next=(nf==run.total_floors)
             intro=random.choice(BOSS_INTROS) if boss_next else "✅ Floor "+str(run.current_floor)+" cleared!"
@@ -501,7 +569,7 @@ class FloorBattleView(discord.ui.View):
         await inter.edit_original_response(embed=e,attachments=[f],view=self)
         self.stop()
 
-    async def _finalize(self,inter):
+    async def _finalize(self, inter):
         run=self._run; gid=self._gid; uid=self._uid
         from airi.economy import add_coins as _ac; await _ac(gid,uid,run.coins)
         from airi.kakera import add_kakera; await add_kakera(gid,uid,run.kak)
@@ -510,13 +578,34 @@ class FloorBattleView(discord.ui.View):
         cr=await add_char_xp(gid,uid,run.cxp)
         await db.pool.execute("UPDATE rpg_characters SET hp_current=hp_max,mana_current=mana_max WHERE guild_id=$1 AND user_id=$2",gid,uid)
         await db.pool.execute("INSERT INTO work_log (guild_id,user_id,last_explore) VALUES ($1,$2,NOW()) ON CONFLICT (guild_id,user_id) DO UPDATE SET last_explore=NOW()",gid,uid)
+
+        # ── Quest event triggers ──────────────────────────────
+        try:
+            qcog = inter.client.cogs.get("Quests")
+            if qcog:
+                await qcog.award_quest_progress(gid, uid, "clear_dungeon")
+                await qcog.award_quest_progress(gid, uid, "kill_boss")
+                if run.run_rating == "S":
+                    await qcog.award_quest_progress(gid, uid, "s_rank_clear")
+                if run.diff == "nightmare":
+                    await qcog.award_quest_progress(gid, uid, "nightmare_clear")
+                if run.potions_used == 0:
+                    await qcog.award_quest_progress(gid, uid, "no_potion_clear")
+                if run.eye_breaks > 0:
+                    await qcog.award_quest_progress(gid, uid, "eye_break", run.eye_breaks)
+        except Exception:
+            pass
+
+        rating_badge = RATING_EMOJI.get(run.run_rating, "")
         gs=" ".join("["+g+"]" for g in run.grades)
         ds=("  ·  ".join(run.drops[-4:]) if run.drops else "")
         lvl_txt=("\n✨ **LEVEL UP!** → Lv."+str(cr.get("new_level"))) if cr.get("leveled_up") else ""
         summ=discord.Embed(
             title="📊 Run Summary — "+run.dname,
             description=(
-                "**"+str(run.total_floors)+" floors** cleared · "+DIFFICULTIES.get(run.diff,{}).get("label","⚔️")+"\n\n"
+                f"**{run.total_floors} floors** cleared · "
+                + DIFFICULTIES.get(run.diff,{}).get("label","⚔️")
+                + f"  ·  {rating_badge} **{run.run_rating}-Rank** clear\n\n"
                 "💰 **+"+str(run.coins)+"** 🪙  ·  💎 **+"+str(run.kak)+"** kakera"
                 +(("  ·  **+"+str(run.gems)+"** gems") if run.gems else "")
                 +"\n⚔️ **+"+str(run.cxp)+"** char XP"
@@ -524,7 +613,7 @@ class FloorBattleView(discord.ui.View):
                 +("\nDrops: "+ds if ds else "")
                 +lvl_txt
             ),
-            color=0xffd700,
+            color=RATING_COLOR.get(run.run_rating, 0xffd700),
         )
         try: await inter.followup.send(embed=summ)
         except: pass
@@ -538,74 +627,93 @@ class FloorBattleView(discord.ui.View):
             except: pass
 
     @discord.ui.button(label="⚔️ Attack", style=discord.ButtonStyle.danger,    row=0)
-    async def atk(self,inter,btn):
-        if inter.user.id!=self._uid: return await inter.response.send_message("Not yours.",ephemeral=True)
+    async def atk(self, inter, btn):
+        if inter.user.id != self._uid: return await inter.response.send_message("Not yours.", ephemeral=True)
         await inter.response.defer()
-        await self._proc(inter,"attack")
+        await self._proc(inter, "attack")
 
     @discord.ui.button(label="✨ Skill",  style=discord.ButtonStyle.primary,   row=0)
-    async def skl(self,inter,btn):
-        if inter.user.id!=self._uid: return await inter.response.send_message("Not yours.",ephemeral=True)
-        avail=[s for s in self._run.skills_db
-               if self._eng.player.cooldowns.get(s["skill_name"],0)<=0
-               and self._eng.player.mana>=SKILL_DB.get(s["skill_name"],{}).get("mana",10)
-               and SKILL_DB.get(s["skill_name"],{}).get("type") not in ("passive",)]
+    async def skl(self, inter, btn):
+        if inter.user.id != self._uid: return await inter.response.send_message("Not yours.", ephemeral=True)
+        avail = [s for s in self._run.skills_db
+                 if self._eng.player.cooldowns.get(s["skill_name"], 0) <= 0
+                 and self._eng.player.mana >= SKILL_DB.get(s["skill_name"], {}).get("mana", 10)
+                 and SKILL_DB.get(s["skill_name"], {}).get("type") not in ("passive",)]
         if not avail:
-            return await inter.response.send_message("No skills available.",ephemeral=True)
-        opts=[discord.SelectOption(
-            label=s["skill_name"]+" ["+s.get("skill_rank","F")+"]",
+            return await inter.response.send_message("No skills available (mana or cooldown).", ephemeral=True)
+        opts = [discord.SelectOption(
+            label=s["skill_name"] + " [" + s.get("skill_rank", "F") + "]",
             value=s["skill_name"],
-            description="Mana:"+str(SKILL_DB.get(s["skill_name"],{}).get("mana",10))+" · "+SKILL_DB.get(s["skill_name"],{}).get("type","?"),
+            description=(SKILL_DB.get(s["skill_name"], {}).get("desc", "")[:80]),
         ) for s in avail[:25]]
-        sel=discord.ui.Select(placeholder="Choose a skill…",options=opts)
+        sel = discord.ui.Select(placeholder="Choose a skill…", options=opts)
+
         async def sel_cb(i2):
-            if i2.user.id!=self._uid: return await i2.response.send_message("Not for you.",ephemeral=True)
+            if i2.user.id != self._uid:
+                return await i2.response.send_message("Not for you.", ephemeral=True)
             await i2.response.defer()
-            sn=sel.values[0]; info=SKILL_DB.get(sn,{})
-            mc_=info.get("mana",10); mult=info.get("multiplier",1.0)
-            is_m=info.get("scaling")=="spirit"; eff=info.get("effect") or {}
-            self._eng.player.mana-=mc_; self._eng.player.cooldowns[sn]=3
-            st=info.get("type","attack")
-            if st in ("heal","shield","abjuration","buff","str_boost","regen"):
-                await self._proc(i2,"skill",sn,0,False,dict(eff,type=st))
+            sn   = sel.values[0]
+            info = SKILL_DB.get(sn, {})
+            mc_  = info.get("mana", 10)
+            mult = info.get("multiplier", 1.0)
+            n_hits  = info.get("hits", 1)
+            el      = info.get("element", "")
+            is_m    = info.get("scaling") == "spirit"
+            eff     = info.get("effect") or {}
+            self._eng.player.mana -= mc_
+            self._eng.player.cooldowns[sn] = info.get("cooldown", 3)
+            st = info.get("type", "attack")
+            # Non-damage skills pass their effect type directly
+            if st in ("heal", "shield", "abjuration", "buff", "regen",
+                      "evasion", "summon", "debuff", "cc"):
+                await self._proc(i2, "skill", sn, 0, False, dict(eff, type=eff.get("type", st)),
+                                 hits=1, element=el)
             else:
-                await self._proc(i2,"skill",sn,mult,is_m,eff if eff else None)
-        sel.callback=sel_cb
-        sv=discord.ui.View(timeout=30); sv.add_item(sel)
-        # Edit main message to show skill selector
-        for c in self.children: c.disabled=True
-        e=self._embed("✨ Choose a skill:")
-        await inter.response.edit_message(embed=e,view=sv)
+                await self._proc(i2, "skill", sn, mult, is_m, eff if eff else None,
+                                 hits=n_hits, element=el)
+
+        sel.callback = sel_cb
+        sv = discord.ui.View(timeout=30)
+        sv.add_item(sel)
+        for c in self.children: c.disabled = True
+        await inter.response.edit_message(embed=self._embed("✨ Choose a skill:"), view=sv)
 
     @discord.ui.button(label="🏃 Flee",   style=discord.ButtonStyle.secondary, row=0)
-    async def flee(self,inter,btn):
-        if inter.user.id!=self._uid: return await inter.response.send_message("Not yours.",ephemeral=True)
+    async def flee(self, inter, btn):
+        if inter.user.id != self._uid: return await inter.response.send_message("Not yours.", ephemeral=True)
         await inter.response.defer()
-        await self._proc(inter,"flee")
+        await self._proc(inter, "flee")
 
     @discord.ui.button(label="⚡ Auto",   style=discord.ButtonStyle.secondary, row=1)
-    async def auto_btn(self,inter,btn):
-        if inter.user.id!=self._uid: return await inter.response.send_message("Not yours.",ephemeral=True)
+    async def auto_btn(self, inter, btn):
+        if inter.user.id != self._uid: return await inter.response.send_message("Not yours.", ephemeral=True)
         await inter.response.defer()
-        chosen=ai_choose_action(self._eng.player,self._eng.monster,self._run.skills_db)
-        action=chosen["action"]; sn=chosen.get("skill_name","")
-        mc_=chosen.get("mana_cost",0)
-        if mc_>0: self._eng.player.mana-=mc_
-        if sn and mc_>0: self._eng.player.cooldowns[sn]=3
-        await self._proc(inter,action,sn,chosen.get("skill_mult",1.0),
-                         chosen.get("is_magic",False),chosen.get("skill_effect",{}))
+        chosen = ai_choose_action(self._eng.player, self._eng.monster, self._run.skills_db)
+        action = chosen["action"]
+        sn     = chosen.get("skill_name", "")
+        mc_    = chosen.get("mana_cost", 0)
+        if mc_ > 0: self._eng.player.mana -= mc_
+        if sn and mc_ > 0: self._eng.player.cooldowns[sn] = 3
+        await self._proc(inter, action, sn,
+                         chosen.get("skill_mult", 1.0),
+                         chosen.get("is_magic", False),
+                         chosen.get("skill_effect", {}),
+                         hits=chosen.get("hits", 1),
+                         element=chosen.get("element", ""))
 
-    @discord.ui.button(label="🧪 Items",  style=discord.ButtonStyle.secondary, row=1)
-    async def items_btn(self,inter,btn):
-        if inter.user.id!=self._uid: return await inter.response.send_message("Not yours.",ephemeral=True)
+    @discord.ui.button(label="🧪 Items",  style=discord.ButtonStyle.secondary, row=1, custom_id="items_btn")
+    async def items_btn(self, inter, btn):
+        if inter.user.id != self._uid: return await inter.response.send_message("Not yours.", ephemeral=True)
         from airi.rpg.shop import MARKET_ITEMS
-        POTION_KEYS=["hp_potion_s","hp_potion_m","hp_potion_l","mana_potion","antidote","revival_orb"]
-        owned=[]
+        POTION_KEYS = ["hp_potion_s","hp_potion_m","hp_potion_l","mana_potion","antidote","revival_orb"]
+        owned = []
         for key in POTION_KEYS:
-            qty=await db.pool.fetchval("SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",self._gid,self._uid,key) or 0
-            if qty>0:
-                it=MARKET_ITEMS.get(key,{})
-                owned.append((key,it.get("name",key),qty))
+            qty = await db.pool.fetchval(
+                "SELECT quantity FROM inventory WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",
+                self._gid, self._uid, key) or 0
+            if qty > 0:
+                it = MARKET_ITEMS.get(key, {})
+                owned.append((key, it.get("name", key), qty))
         if not owned:
             return await inter.response.send_message("🧪 No usable items in inventory. Buy potions from .",ephemeral=True)
         opts=[discord.SelectOption(label=f"{name} (x{qty})",value=key,description=MARKET_ITEMS.get(key,{}).get("effect","")[:80]) for key,name,qty in owned[:25]]
@@ -619,22 +727,30 @@ class FloorBattleView(discord.ui.View):
                 self._upd(); f=await self._render()
                 return await i2.edit_original_response(embed=self._embed("❌ No "+key+" left!"),attachments=[f],view=self)
             await db.pool.execute("UPDATE inventory SET quantity=quantity-1 WHERE guild_id=$1 AND user_id=$2 AND item_key=$3",self._gid,self._uid,key)
-            p=self._eng.player; note=""
-            if key=="hp_potion_s":
-                gain=max(1,int(p.hp_max*0.20)); p.hp=min(p.hp_max,p.hp+gain); note=f"🧪 Small HP Potion: +{gain} HP"
-            elif key=="hp_potion_m":
-                gain=max(1,int(p.hp_max*0.40)); p.hp=min(p.hp_max,p.hp+gain); note=f"🧪 Medium HP Potion: +{gain} HP"
-            elif key=="hp_potion_l":
-                gain=max(1,int(p.hp_max*0.70)); p.hp=min(p.hp_max,p.hp+gain); note=f"🧪 Large HP Potion: +{gain} HP"
-            elif key=="mana_potion":
-                gain=max(1,int(p.mana_max*0.30)); p.mana=min(p.mana_max,p.mana+gain); note=f"💙 Mana Potion: +{gain} Mana"
-            elif key=="antidote":
-                p.effects=[e for e in p.effects if e.etype not in ("venom","burn")]; note="🌿 Antidote: cured Venom/Burn"
-            elif key=="revival_orb":
-                if not any(e.etype=="revival" for e in p.effects):
+            p = self._eng.player; note = ""
+            if key == "hp_potion_s":
+                gain = max(1, int(p.hp_max * 0.20)); p.hp = min(p.hp_max, p.hp + gain)
+                note = f"🧪 Small HP Potion: +{gain} HP"
+                self._run.potions_used += 1
+            elif key == "hp_potion_m":
+                gain = max(1, int(p.hp_max * 0.40)); p.hp = min(p.hp_max, p.hp + gain)
+                note = f"🧪 Medium HP Potion: +{gain} HP"
+                self._run.potions_used += 1
+            elif key == "hp_potion_l":
+                gain = max(1, int(p.hp_max * 0.70)); p.hp = min(p.hp_max, p.hp + gain)
+                note = f"🧪 Large HP Potion: +{gain} HP"
+                self._run.potions_used += 1
+            elif key == "mana_potion":
+                gain = max(1, int(p.mana_max * 0.30)); p.mana = min(p.mana_max, p.mana + gain)
+                note = f"💙 Mana Potion: +{gain} Mana"
+            elif key == "antidote":
+                p.effects = [e for e in p.effects if e.etype not in ("venom","burn")]
+                note = "🌿 Antidote: cured Venom/Burn"
+            elif key == "revival_orb":
+                if not any(e.etype == "revival" for e in p.effects):
                     from .engine import Effect
-                    p.effects.append(Effect(etype="revival",duration=999,value=1.0,source="Revival Orb"))
-                note="✨ Revival Orb: survives next lethal hit"
+                    p.effects.append(Effect(etype="revival", duration=999, value=1.0, source="Revival Orb"))
+                note = "✨ Revival Orb: survives next lethal hit"
             self._log.append(note)
             self._upd(); f=await self._render()
             await i2.edit_original_response(embed=self._embed(note),attachments=[f],view=self)
@@ -642,6 +758,14 @@ class FloorBattleView(discord.ui.View):
         sv=discord.ui.View(timeout=30); sv.add_item(sel)
         for c in self.children: c.disabled=True
         await inter.response.edit_message(embed=self._embed("🧪 Choose an item:"),view=sv)
+
+    # [BUG-4] Stealth — Shadow class only. Removed in __init__ for other classes.
+    @discord.ui.button(label="🌑 Stealth", style=discord.ButtonStyle.secondary, row=1, custom_id="stealth_btn")
+    async def stealth_btn(self, inter, btn):
+        if inter.user.id != self._uid:
+            return await inter.response.send_message("Not yours.", ephemeral=True)
+        await inter.response.defer()
+        await self._proc(inter, "stealth")
 
 
 # ─────────────────────────────────────────────────────────────────

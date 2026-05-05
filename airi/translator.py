@@ -150,81 +150,80 @@ class LangPickerView(discord.ui.View):
 
 
 class TranslatorCog(commands.Cog, name="Translator"):
-    def __init__(self,bot): self.bot=bot
+    def __init__(self, bot): self.bot = bot
 
-    @commands.hybrid_command(name="translate",aliases=["tr","trans"],
+    @commands.hybrid_command(name="translate", aliases=["tr","trans"],
                              description="Translate text to any language")
-    async def translate_cmd(self,ctx,language:str,*,text:str):
-        """
-        Translate text.  Examples:
-          /translate japanese Hello world
-          /translate fr Good morning!
-          !translate ko How are you?
-        """
+    @discord.app_commands.describe(
+        language="Target language name or code (e.g. Japanese, ja, fr, Korean)",
+        text="The text you want to translate"
+    )
+    async def translate_cmd(self, ctx, language: str, text: str):
+        """Translate text. Use: /translate japanese Hello world"""
         await ctx.defer()
-        code=resolve(language)
+        code = resolve(language)
         if not code:
             return await ctx.send(embed=discord.Embed(
-                description=f"❌ Unknown language: **{language}**\nTry a name like `Japanese` or code like `ja`.\nSee `/langs` for the full list.",
+                description=f"Unknown language: **{language}**\nTry a name like `Japanese` or code like `ja`.\nSee `/langs` for the full list.",
                 color=0xe74c3c))
-        result,engine=await translate(text,code)
-        lang_name=LANGUAGES.get(code,code)
-        flag=FLAGS.get(code,"🌐")
-        e=discord.Embed(color=C_INFO)
-        e.set_author(name=ctx.author.display_name,icon_url=ctx.author.display_avatar.url)
-        e.add_field(name="📝 Original",value=text[:400],inline=False)
+        result, engine = await translate(text, code)
+        lang_name = LANGUAGES.get(code, code)
+        flag = FLAGS.get(code, "\U0001f310")
+        e = discord.Embed(color=C_INFO)
+        e.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+        e.add_field(name="Original", value=text[:400], inline=False)
         e.add_field(name=f"{flag} {lang_name}",
-                    value=result[:400] if result!=text else "*(unchanged)*",inline=False)
-        e.set_footer(text=f"Engine: {engine}  ·  /setlang to set your default language")
+                    value=result[:400] if result != text else "*(unchanged)*", inline=False)
+        e.set_footer(text=f"Engine: {engine}  /setlang to set your default language")
         await ctx.send(embed=e)
 
-    @commands.hybrid_command(name="setlang",aliases=["mylang","langpref","language"],
+    @commands.hybrid_command(name="setlang", aliases=["mylang","langpref","language"],
                              description="Set your preferred language for Airi's responses")
-    async def setlang(self,ctx):
-        gid,uid=ctx.guild.id,ctx.author.id
-        current=await get_user_lang(gid,uid)
-        cur_name=LANGUAGES.get(current,"English") if current else "English"
-        async def confirm(inter,code):
-            await set_user_lang(gid,uid,code)
-            name=LANGUAGES.get(code,"English") if code else "English"
-            flag=FLAGS.get(code,"🌐") if code else "🇬🇧"
-            e=discord.Embed(title="✅ Language Saved!",
-                description=f"Your language is now **{flag} {name}**.\n\nAiri will use this language for your responses.",
+    async def setlang(self, ctx):
+        gid, uid = ctx.guild.id, ctx.author.id
+        current = await get_user_lang(gid, uid)
+        cur_name = LANGUAGES.get(current, "English") if current else "English"
+        async def confirm(inter, code):
+            await set_user_lang(gid, uid, code)
+            name = LANGUAGES.get(code, "English") if code else "English"
+            flag = FLAGS.get(code, "\U0001f310") if code else "\U0001f1ec\U0001f1e7"
+            e = discord.Embed(title="Language Saved!",
+                description=f"Your language is now **{flag} {name}**.",
                 color=C_SUCCESS)
-            await inter.response.edit_message(embed=e,view=None)
-        e=discord.Embed(title="🌐 Your Language",
-            description=f"Current: **{FLAGS.get(current,'🌐')} {cur_name}**\n\nPick a new language below:",
+            await inter.response.edit_message(embed=e, view=None)
+        e = discord.Embed(title="Your Language",
+            description=f"Current: **{FLAGS.get(current, chr(127760))} {cur_name}**\n\nPick a new language below:",
             color=C_INFO)
-        view=LangPickerView(ctx,confirm,"user")
-        await ctx.send(embed=e,view=view)
+        view = LangPickerView(ctx, confirm, "user")
+        await ctx.send(embed=e, view=view)
 
-    @commands.hybrid_command(name="serverlang",aliases=["slang","defaultlang"],
+    @commands.hybrid_command(name="serverlang", aliases=["slang","defaultlang"],
                              description="[Admin] Set the server default language")
     @commands.has_permissions(manage_guild=True)
-    async def serverlang(self,ctx):
-        gid=ctx.guild.id
-        current=await get_server_lang(gid)
-        cur_name=LANGUAGES.get(current,"English") if current else "English"
-        async def confirm(inter,code):
-            await set_server_lang(gid,code)
-            name=LANGUAGES.get(code,"English") if code else "English"
-            flag=FLAGS.get(code,"🌐") if code else "🇬🇧"
-            e=discord.Embed(title="✅ Server Language Set!",
-                description=f"Default language → **{flag} {name}**\nUsers can override with `/setlang`.",
+    async def serverlang(self, ctx):
+        gid = ctx.guild.id
+        current = await get_server_lang(gid)
+        cur_name = LANGUAGES.get(current, "English") if current else "English"
+        async def confirm(inter, code):
+            await set_server_lang(gid, code)
+            name = LANGUAGES.get(code, "English") if code else "English"
+            flag = FLAGS.get(code, "\U0001f310") if code else "\U0001f1ec\U0001f1e7"
+            e = discord.Embed(title="Server Language Set!",
+                description=f"Default language is now **{flag} {name}**. Users can override with `/setlang`.",
                 color=C_SUCCESS)
-            await inter.response.edit_message(embed=e,view=None)
-        e=discord.Embed(title="🌐 Server Language",
-            description=f"Current default: **{FLAGS.get(current,'🌐')} {cur_name}**\n\nPick a new default for the whole server:",
+            await inter.response.edit_message(embed=e, view=None)
+        e = discord.Embed(title="Server Language",
+            description=f"Current default: **{FLAGS.get(current, chr(127760))} {cur_name}**\n\nPick a new default for the whole server:",
             color=C_INFO)
-        view=LangPickerView(ctx,confirm,"server")
-        await ctx.send(embed=e,view=view)
+        view = LangPickerView(ctx, confirm, "server")
+        await ctx.send(embed=e, view=view)
 
-    @commands.hybrid_command(name="langs",aliases=["langlist","languages"],
+    @commands.hybrid_command(name="langs", aliases=["langlist","languages"],
                              description="Browse all supported languages")
-    async def langs(self,ctx):
-        e=discord.Embed(title="🌐 Supported Languages",color=C_INFO)
-        for label,codes in LangPickerView.GROUPS:
-            lines=[f"{FLAGS.get(c,'🌐')} `{c}` {LANGUAGES[c]}" for c in codes if c in LANGUAGES]
-            e.add_field(name=label,value="\n".join(lines),inline=True)
-        e.set_footer(text="/translate <lang> <text>  ·  /setlang to set your preference")
+    async def langs(self, ctx):
+        e = discord.Embed(title="Supported Languages", color=C_INFO)
+        for label, codes in LangPickerView.GROUPS:
+            lines = [f"{FLAGS.get(c, chr(127760))} `{c}` {LANGUAGES[c]}" for c in codes if c in LANGUAGES]
+            e.add_field(name=label, value="\n".join(lines), inline=True)
+        e.set_footer(text="/translate <lang> <text>  /setlang to set your preference")
         await ctx.send(embed=e)

@@ -16,7 +16,7 @@ IGNORED_USERS = {GOON_ID, AIRI_ID}
 LOG_CHANNEL_ID = int(os.getenv("LOG_CHANNEL_ID", 0))
 
 # ── API Keys ──────────────────────────────────────────────────────
-KLIPY_API_KEY = os.getenv("KLIPY_API_KEY")
+KLIPY_API_KEY = os.getenv("KLIPY_API_KEY", "1bhaiaxUnVFAr4JpBsWgAMOv3Z12Noyx0R2DVuqrKRJeDmalZuKiaLJC6AOkRFJ8")
 
 # ── Limits ────────────────────────────────────────────────────────
 EMPTY_LIMIT = 2

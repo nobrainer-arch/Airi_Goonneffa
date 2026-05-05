@@ -514,6 +514,13 @@ async def init():
         "ALTER TABLE rpg_characters ALTER COLUMN constitution SET DEFAULT 10",
         "UPDATE rpg_characters SET constitution = 10 WHERE constitution IS NULL",
         "ALTER TABLE rpg_characters ADD COLUMN IF NOT EXISTS pending_xp BIGINT NOT NULL DEFAULT 0",
+        # v4 additions — daily quests
+        """CREATE TABLE IF NOT EXISTS rpg_daily_quests (
+            guild_id   BIGINT NOT NULL,
+            user_id    BIGINT NOT NULL,
+            quest_data TEXT   NOT NULL DEFAULT '{}',
+            PRIMARY KEY (guild_id, user_id)
+        )""",
     ]
     async with pool.acquire() as conn:
         for sql in migrations:

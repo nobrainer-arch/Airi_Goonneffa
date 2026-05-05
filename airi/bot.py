@@ -30,13 +30,26 @@ bot = commands.Bot(
     help_command=None,
 )
 
+_synced = False  # Guard: only sync once per process lifetime
+
 @bot.event
 async def on_ready():
-    await bot.tree.sync()  # Sync global commands
-    for guild in bot.guilds:
-        await bot.tree.sync(guild=guild)  # Sync guild-specific
+    global _synced
     print(f"✅ Airi online as {bot.user}")
-    print(f"✅ Synced slash commands for {len(bot.guilds)} guilds")
+    if _synced:
+        return  # Skip re-sync on reconnect — preserves Discord daily rate limit
+    _synced = True
+    # Sync guild-specific first (instant), then global (up to 1h propagation)
+    for guild in bot.guilds:
+        try:
+            await bot.tree.sync(guild=guild)
+        except Exception as e:
+            print(f"⚠️  Guild sync failed for {guild.id}: {e}")
+    try:
+        await bot.tree.sync()
+    except Exception as e:
+        print(f"⚠️  Global tree.sync failed: {e}")
+    print(f"✅ Slash commands synced for {len(bot.guilds)} guilds")
 
 
 @bot.event
@@ -117,6 +130,25 @@ async def on_command_error(ctx, error):
     else:
         print(f"Command error in {ctx.command}: {error}")
 
+
+@bot.command(name="sync", hidden=True)
+@commands.is_owner()
+async def force_sync(ctx, scope: str = "guild"):
+    """
+    Owner-only: force re-sync slash commands.
+    !sync        → sync current guild only (instant, best for testing)
+    !sync global → sync globally (up to 1 hour to propagate)
+    """
+    global _synced
+    await ctx.defer()
+    if scope == "global":
+        await bot.tree.sync()
+        _synced = True
+        await ctx.send("✅ Global slash commands synced. May take up to 1 hour to appear.")
+    else:
+        await bot.tree.sync(guild=ctx.guild)
+        await ctx.send(f"✅ Guild slash commands synced for **{ctx.guild.name}**. Should appear instantly.")
+
 async def setup_hook():
     await db.init()
 
@@ -173,6 +205,7 @@ async def setup_hook():
     from airi.ignore        import IgnoreCog
     from airi.banners       import BannersCog
     from airi.rpg           import RPGStatsCog, DungeonCog, GuildSystemCog, EventsCog, MarketCog, RPGShopCog
+    from airi.rpg.quest_cog import QuestCog
     from airi.translator   import TranslatorCog
     from airi.games       import GamesCog
     from airi.hub          import EconomyHub, SocialHub, LeaderboardHub, ServerHub #WaifuHub, InvHub, RelHub
@@ -186,6 +219,7 @@ async def setup_hook():
         IgnoreCog, BannersCog,
         # RPG system
         RPGStatsCog, DungeonCog, GuildSystemCog, MarketCog, RPGShopCog,
+        QuestCog,
         # Consolidated hub commands
         EconomyHub, SocialHub, LeaderboardHub, ServerHub,
         # Translator + Games (were imported but never loaded)
