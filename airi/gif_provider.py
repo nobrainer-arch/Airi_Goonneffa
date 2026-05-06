@@ -75,22 +75,48 @@ async def _waifupics(category: str, nsfw: bool) -> str | None:
 _klipy_pool: dict[str, list[str]] = {}
 
 async def _klipy_pooled(query: str) -> str | None:
+    # Only serve from cache if we have actual results
+    cached = _klipy_pool.get(query)
+    if cached:
+        return random.choice(cached)
+
     from config import KLIPY_API_KEY
-    if query not in _klipy_pool:
-        data = await _get(
-            "https://api.klipy.com/v1/reactions/search",
-            params={"q": query, "per_page": 15},
-            headers={"Authorization": f"Bearer {KLIPY_API_KEY}"},
-        )
-        results = []
+    data = await _get(
+        "https://api.klipy.com/v1/reactions/search",
+        params={"q": query, "limit": 15},   # klipy uses 'limit', not 'per_page'
+        headers={
+            "Authorization": f"Bearer {KLIPY_API_KEY}",
+            "Accept": "application/json",
+        },
+    )
+    results = []
+    if data:
         try:
-            for item in data.get("data",{}).get("clips",[]):
-                url = item.get("clip",{}).get("url") or item.get("url")
-                if url: results.append(url)
-        except: pass
+            # Handle both response shapes: data.clips OR data.data.clips
+            clips = (
+                data.get("clips")
+                or data.get("data", {}).get("clips")
+                or []
+            )
+            for item in clips:
+                url = (
+                    (item.get("clip") or {}).get("url")
+                    or item.get("url")
+                    or item.get("mp4")
+                    or item.get("gif")
+                )
+                if url:
+                    results.append(url)
+        except Exception as e:
+            print(f"[klipy] parse error for '{query}': {e}")
+    else:
+        print(f"[klipy] no data returned for '{query}' (API may be down or key invalid)")
+
+    # Only cache non-empty results so failed queries are retried next call
+    if results:
         _klipy_pool[query] = results
-    urls = _klipy_pool.get(query,[])
-    return random.choice(urls) if urls else None
+        return random.choice(results)
+    return None
 
 async def _otaku(reaction: str) -> str | None:
     data = await _get(f"https://api.otakugifs.xyz/gif?reaction={reaction}")
@@ -104,16 +130,32 @@ NEKOSBEST_SFW: dict[str, str] = {
     "poke":"poke","slap":"nod","laugh":"laugh","cry":"cry","blush":"blush",
     "bite":"bite","dance":"dance","smile":"smile","wink":"wink","nod":"nod",
     "thumbsup":"thumbsup","shoot":"shoot","sleep":"sleep",
+    # aliases → existing endpoints
+    "hi":"wave","bye":"wave","hello":"wave",
+    "cheer":"dance","celebrate":"dance",
+    "sad":"cry","depressed":"cry","sob":"cry",
+    "lol":"laugh","lmao":"laugh","rofl":"laugh",
+    "bored":"sleep","yawn":"sleep",
+    "rage":"shoot","bang":"shoot",
+    "idiot":"baka" if False else "nod",  # baka not on nekosbest → handled below
 }
 NEKOSLIFE_SFW: dict[str, str] = {
     "tickle":"tickle","smug":"smug","baka":"baka","think":"think",
     "hug":"hug","kiss":"kiss","pat":"pat","poke":"poke","cuddle":"cuddle",
+    "shrug":"shrug","stare":"stare","highfive":"highfive",
+    # SFW command aliases
+    "facepalm":"facepalm","pout":"pout","shock":"scared",
+    "idiot":"baka","stfu":"baka","peek":"stare","watch":"stare",
+    "rage":"angry",
 }
 WAIFUPICS_SFW: dict[str, str] = {
     "hug":"hug","kiss":"kiss","pat":"pat","cuddle":"cuddle","slap":"slap",
     "kick":"kick","poke":"poke","cry":"cry","blush":"blush","dance":"dance",
     "smile":"smile","wave":"wave","wink":"wink","nod":"nod","nom":"nom",
     "bite":"bite","happy":"happy","laugh":"laugh","lick":"lick",
+    # aliases
+    "hi":"wave","bye":"wave","cheer":"dance","sad":"cry","lol":"laugh",
+    "bored":"nod","shock":"blush","sip":"nod",
 }
 OTAKU_MAP: dict[str, str] = {
     "cry":"cry","laugh":"laugh","blush":"blush","wave":"wave","smile":"smile",
@@ -123,34 +165,38 @@ OTAKU_MAP: dict[str, str] = {
 
 # ── Auto-fallback query builder ───────────────────────────────────
 def _klipy_query(command: str) -> str:
-    """Build a sensible Klipy query for any command automatically.
-    No manual registration needed — this covers any cmd added to actio.py."""
+    """Build a Klipy search query for any command.
+    SFW overrides ensure searches return actual results (not 'anime hi' which returns nothing)."""
     overrides: dict[str, str] = {
-        "fuck":        "anime sex hentai",
-        "bfuck":       "anime doggy hentai",
-        "blowjob":     "anime blowjob hentai",
-        "dickride":    "anime riding hentai",
-        "anal":        "anime anal hentai",
-        "kuni":        "anime cunnilingus hentai",
-        "pussyeat":    "anime pussy eating hentai",
-        "titjob":      "anime titjob paizuri hentai",
-        "threesome":   "anime threesome hentai",
-        "gangbang":    "anime gangbang hentai",
-        "fap":         "anime masturbate hentai",
-        "cum":         "anime cum hentai",
-        "finger":      "anime fingering hentai",
-        "grind":       "anime grinding hentai",
-        "bathroomfuck":"anime sex quickie hentai",
-        "bondage":     "anime bondage hentai",
-        "spank":       "anime spanking hentai",
-        "grabbutts":   "anime ass groping",
-        "grabboobs":   "anime boob groping",
-        "69":          "anime 69 hentai",
-        "footjob":     "anime footjob",
-        "squirt":      "anime squirt hentai",
-        "footlick":    "anime foot lick",
-        "cum_male":    "anime cum facial",
-        "fuck_lesbian":"anime lesbian sex hentai",
+        # NSFW
+        "fuck":"anime sex hentai","bfuck":"anime doggy hentai",
+        "blowjob":"anime blowjob hentai","dickride":"anime riding hentai",
+        "anal":"anime anal hentai","kuni":"anime cunnilingus hentai",
+        "pussyeat":"anime pussy eating hentai","titjob":"anime titjob paizuri hentai",
+        "threesome":"anime threesome hentai","gangbang":"anime gangbang hentai",
+        "fap":"anime masturbate hentai","cum":"anime cum hentai",
+        "finger":"anime fingering hentai","grind":"anime grinding hentai",
+        "bathroomfuck":"anime sex quickie hentai","bondage":"anime bondage hentai",
+        "spank":"anime spanking hentai","grabbutts":"anime ass groping",
+        "grabboobs":"anime boob groping","69":"anime 69 hentai",
+        "footjob":"anime footjob","squirt":"anime squirt hentai",
+        "footlick":"anime foot lick","cum_male":"anime cum facial",
+        "fuck_lesbian":"anime lesbian sex hentai","yurifuck":"anime yuri sex",
+        "yaoifuck":"anime yaoi sex","lickdick":"anime lick dick hentai",
+        "handjob":"anime handjob hentai","suckboobs":"anime suck boobs hentai",
+        "suck":"anime suck hentai",
+        # SFW — mapped to better search terms that actually return results
+        "hi":"anime wave hello","bye":"anime wave goodbye",
+        "hello":"anime wave hello","cheer":"anime cheer celebrate",
+        "celebrate":"anime celebrate happy dance",
+        "facepalm":"anime facepalm","pout":"anime pout sulk",
+        "bored":"anime bored yawn","shrug":"anime shrug whatever",
+        "shock":"anime shocked surprised","rage":"anime rage angry",
+        "sad":"anime sad cry","lol":"anime laugh lol",
+        "peek":"anime peek spy","watch":"anime stare watch",
+        "idiot":"anime baka idiot","stfu":"anime baka stfu",
+        "sip":"anime sip drink tea","tease":"anime tease smug",
+        "bang":"anime bang shoot gun","fah":"anime facepalm fail",
     }
     return overrides.get(command, f"anime {command}")
 
@@ -230,25 +276,45 @@ async def get_gif(
 
 async def klipy_search(query: str, limit: int = 8) -> list[str]:
     """Search Klipy for GIFs by query. Returns list of URLs."""
-    urls = await _klipy_pooled(query)
-    if urls: return [urls]
-    # Fallback: try direct Klipy search
+    # Serve from cache if available
+    cached = _klipy_pool.get(query)
+    if cached:
+        return cached[:limit]
+
     from config import KLIPY_API_KEY
     try:
         async with aiohttp.ClientSession() as s:
             async with s.get(
                 "https://api.klipy.com/v1/reactions/search",
-                params={"q": query, "per_page": limit},
-                headers={"Authorization": f"Bearer {KLIPY_API_KEY}"},
+                params={"q": query, "limit": limit},
+                headers={
+                    "Authorization": f"Bearer {KLIPY_API_KEY}",
+                    "Accept": "application/json",
+                },
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
                 if r.status == 200:
-                    data = await r.json()
+                    data = await r.json(content_type=None)
                     results = []
-                    for item in data.get("data",{}).get("clips",[])[:limit]:
-                        url = item.get("clip",{}).get("url") or item.get("url")
-                        if url: results.append(url)
+                    clips = (
+                        data.get("clips")
+                        or data.get("data", {}).get("clips")
+                        or []
+                    )
+                    for item in clips[:limit]:
+                        url = (
+                            (item.get("clip") or {}).get("url")
+                            or item.get("url")
+                            or item.get("mp4")
+                            or item.get("gif")
+                        )
+                        if url:
+                            results.append(url)
+                    if results:
+                        _klipy_pool[query] = results
                     return results
+                else:
+                    print(f"[klipy_search] HTTP {r.status} for '{query}'")
     except Exception as e:
-        print(f"klipy_search error: {e}")
+        print(f"[klipy_search] error for '{query}': {e}")
     return []

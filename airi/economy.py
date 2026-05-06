@@ -1,11 +1,12 @@
 # airi/economy.py — Economy commands with full UI
 import discord
 from discord.ext import commands
-from datetime import datetime, timedelta, timezone, timezone
+from datetime import datetime, timedelta, timezone
 import random
 import db
 import config
 from utils import _err, C_ECONOMY, C_INFO, C_SUCCESS, log_txn
+from airi.i18n import tr_send
 
 # ── Constants ─────────────────────────────────────────────────────
 DAILY_MIN     = 3500
@@ -217,7 +218,7 @@ class EconomyCog(commands.Cog, name="Economy"):
         e.add_field(name=f"🔥 Day {streak}", value=f"+{bonus:,} 🪙", inline=True)
         e.add_field(name="Total",          value=f"**{total:,} 🪙**", inline=False)
         e.set_footer(text="Come back tomorrow!")
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     # ── Balance ────────────────────────────────────────────────────
     @commands.hybrid_command(name="balance", aliases=["bal","coins","wallet"], description="Check wallet balance")
@@ -234,7 +235,7 @@ class EconomyCog(commands.Cog, name="Economy"):
         ttl = row["active_title"] if row else None
         e = _bal_embed(target, bal, kak, ttl)
         view = BalanceView(ctx, target)
-        await ctx.send(embed=e, view=view)
+        await tr_send(ctx, e, view=view)
 
     # ── Pay ────────────────────────────────────────────────────────
     @commands.hybrid_command(name="pay", description="Send coins to someone (5% tax)")
@@ -278,7 +279,7 @@ class EconomyCog(commands.Cog, name="Economy"):
                             if msg: await i2.followup.send(msg, ephemeral=True)
                             else: await i2.followup.send(ephemeral=True, **kw)
                     await EconomyCog._static_pay(FC(), member, int(raw), i2)
-            return await ctx.send_modal(AmtM()) if hasattr(ctx, "send_modal") else await ctx.send(f"Usage: `!pay @{member.display_name} <amount>`")
+            return await ctx.send(f"Use `!pay @{member.display_name} <amount>` or run `/pay` without arguments.")
         await EconomyCog._static_pay(ctx, member, amount, None)
 
     @staticmethod
@@ -405,7 +406,7 @@ class EconomyCog(commands.Cog, name="Economy"):
             if title_name not in owned:
                 return await _err(ctx, f"You don't own title `{title_name}`.")
             await db.pool.execute("UPDATE economy SET active_title=$1 WHERE guild_id=$2 AND user_id=$3", title_name, gid, uid)
-            return await ctx.send(embed=discord.Embed(description=f"✅ Title **{title_name}** equipped!", color=C_SUCCESS))
+            return await tr_send(ctx, discord.Embed(description=f"✅ Title **{title_name}** equipped!", color=C_SUCCESS))
         # Show dropdown
         opts = [discord.SelectOption(label=t, value=t) for t in owned[:25]]
         sel  = discord.ui.Select(placeholder="Choose a title to equip…", options=opts)

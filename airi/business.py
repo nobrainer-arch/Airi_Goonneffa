@@ -7,6 +7,7 @@ import db
 from utils import _err, C_BUSINESS, C_WARN, C_SUCCESS
 from airi.guild_config import check_channel
 from airi.economy import add_coins
+from airi.i18n import tr_send
 
 TAX_RATE    = 0.15
 MANAGER_CUT = 0.20
@@ -104,7 +105,7 @@ class BusinessCog(commands.Cog, name="Business"):
                     value=f"**{info['cost']:,}** coins · Lv.{info['min_level']}+ · {info['income'][0]}–{info['income'][1]}/h\n*{info['desc']}*",
                     inline=True
                 )
-            msg = await ctx.send(embed=e, view=view)
+            msg = await tr_send(ctx, e, view=view)
             timed_out = await view.wait()
             if timed_out or not view._chosen:
                 return
@@ -158,7 +159,7 @@ class BusinessCog(commands.Cog, name="Business"):
             ),
             color=C_BUSINESS,
         )
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     @commands.command(aliases=["mystore"])
     async def mybiz(self, ctx):
@@ -167,7 +168,7 @@ class BusinessCog(commands.Cog, name="Business"):
         gid, uid = ctx.guild.id, ctx.author.id
         biz = await db.pool.fetchrow("SELECT * FROM businesses WHERE guild_id=$1 AND owner_id=$2 ", gid, uid)
         if not biz:
-            return await ctx.send(embed=discord.Embed(
+            return await tr_send(ctx, discord.Embed(
                 description="You don't own a business. Use `!startbiz` to open one!",
                 color=C_WARN
             ))
@@ -183,9 +184,9 @@ class BusinessCog(commands.Cog, name="Business"):
         e.add_field(name="Level",    value=str(biz["level"]),                inline=True)
         e.add_field(name="Income",   value=f"{info['income'][0]}–{info['income'][1]}/h", inline=True)
         e.add_field(name="Manager",  value=manager.mention if manager else "None", inline=True)
-        e.add_field(name="Collect",  value="✅ Ready!" if ready else f"⏰ {int(1-hours_since*60//60)}h left", inline=True)
+        e.add_field(name="Collect",  value="✅ Ready!" if ready else f"⏰ {int((1 - hours_since % 1) * 60)}m left", inline=True)
         e.set_footer(text="!collect to collect income · !upgrade to level up · !hire @user to add manager")
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     @commands.hybrid_command()
     async def collect(self, ctx):
@@ -219,11 +220,17 @@ class BusinessCog(commands.Cog, name="Business"):
         # Tax
         tax    = max(1, int(earned * TAX_RATE))
         net    = earned - tax
+
+        # Manager cut — deducted from owner's net (not created from nothing)
+        mgr_cut = 0
+        if biz["manager_id"]:
+            mgr_cut = int(net * MANAGER_CUT)
+            net -= mgr_cut
+
         await add_coins(gid, uid, net)
 
-        # Manager cut
-        if biz["manager_id"]:
-            mgr_cut = int(earned * MANAGER_CUT)
+        # Pay manager their cut
+        if biz["manager_id"] and mgr_cut > 0:
             await add_coins(gid, biz["manager_id"], mgr_cut)
             mgr = ctx.guild.get_member(biz["manager_id"])
             if mgr:
@@ -238,7 +245,7 @@ class BusinessCog(commands.Cog, name="Business"):
             color=C_SUCCESS,
         )
         e.set_footer(text=f"Level {biz['level']} · Next collection in 1h")
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     @commands.command(aliases=["upgradestore"])
     async def upgrade(self, ctx):
@@ -281,7 +288,7 @@ class BusinessCog(commands.Cog, name="Business"):
             description=f"Cost: **{cost:,}** coins\nNew income: **{int(info['income'][0]*new_level)}–{int(info['income'][1]*new_level)}**/h",
             color=C_BUSINESS
         )
-        await ctx.send(embed=e, view=UpgradeView())
+        await tr_send(ctx, e, view=UpgradeView())
 
     @commands.hybrid_command()
     async def hire(self, ctx, member: discord.Member = None):
@@ -314,7 +321,7 @@ class BusinessCog(commands.Cog, name="Business"):
 
         if member.bot or member == ctx.author: return await _err(ctx, "Invalid target.")
         await db.pool.execute("UPDATE businesses SET manager_id=$1 WHERE id=$2", member.id, biz["id"])
-        await ctx.send(embed=discord.Embed(
+        await tr_send(ctx, discord.Embed(
             description=f"👔 {member.mention} is now managing **{biz['name']}**. They earn **{int(MANAGER_CUT*100)}%** per collection.",
             color=C_BUSINESS
         ))
@@ -368,7 +375,7 @@ class BusinessCog(commands.Cog, name="Business"):
             gid
         )
         if not rows:
-            return await ctx.send(embed=discord.Embed(description="No businesses open yet. Be the first!", color=C_BUSINESS))
+            return await tr_send(ctx, discord.Embed(description="No businesses open yet. Be the first!", color=C_BUSINESS))
         e = discord.Embed(title="🏭 Server Businesses", color=C_BUSINESS)
         for biz in rows[:20]:
             owner = ctx.guild.get_member(biz["owner_id"])
@@ -378,4 +385,4 @@ class BusinessCog(commands.Cog, name="Business"):
                 value=f"Owner: {owner.display_name if owner else '<left>'}",
                 inline=True,
             )
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)

@@ -2,7 +2,8 @@
 # Single source of truth for: get_char, create_char, get_skills, get_equipment,
 # XP system, VIT/HP/Mana formulas, race bonuses, class growth, character sheet embed
 import discord
-from discord.ext import commands, tasks
+from discord.ext import commands
+from airi.i18n import tr_send, tr_edit, tr_inter_send, tasks
 from datetime import datetime, timezone
 import db
 from utils import C_INFO, C_SUCCESS, C_WARN, _err
@@ -664,12 +665,19 @@ class RPGStatsCog(commands.Cog, name="RPG"):
         char = await get_char(ctx.guild.id, ctx.author.id)
         if not char:
             v = ClassSelectView(ctx.author.id, ctx.guild.id)
-            return await ctx.send(embed=discord.Embed(title="⚔️ Create Your Character",
-                description="Browse classes with ◀▶ then choose your race!", color=0x5d6bb5), view=v)
+            return await tr_send(ctx,
+                discord.Embed(title="⚔️ Create Your Character",
+                    description="Browse classes with ◀▶ then choose your race!", color=0x5d6bb5),
+                view=v)
         sk = await get_skills(ctx.guild.id, ctx.author.id)
         eq = await get_equipment(ctx.guild.id, ctx.author.id)
-        await ctx.send(embed=char_embed(char, ctx.author),
-                       view=RPGPanel(char, ctx.author, sk, eq, ctx.author.id))
+        panel = RPGPanel(char, ctx.author, sk, eq, ctx.author.id)
+        await tr_send(ctx, char_embed(char, ctx.author), view=panel)
+
+    @rpg.command(name="panel", description="View your RPG character panel — stats, skills, equipment")
+    async def rpg_panel(self, ctx):
+        """Slash-accessible alias for /rpg — shows the full character panel."""
+        await self.rpg(ctx)
 
     @rpg.command(name="allocate", description="Allocate free stat points to your character")
     async def rpg_allocate(self, ctx):
@@ -724,21 +732,22 @@ class RPGStatsCog(commands.Cog, name="RPG"):
             ),
             inline=False,
         )
-        await ctx.send(embed=e, view=RPGPanel(char, ctx.author, sk, eq, ctx.author.id))
+        await tr_send(ctx, e, view=RPGPanel(char, ctx.author, sk, eq, ctx.author.id))
 
     @rpg.command(name="leaderboard", description="RPG leaderboard (also in /rpg → 🏆 Ranks)")
-    async def rpg_lb(self,ctx):
-        rows=await db.pool.fetch("""
+    async def rpg_lb(self, ctx):
+        rows = await db.pool.fetch("""
             SELECT user_id,class,realm_level,(strength+constitution+agility+spirit+vitality) AS power
             FROM rpg_characters WHERE guild_id=$1 ORDER BY power DESC LIMIT 10
-        """,ctx.guild.id)
-        if not rows: return await ctx.send(embed=discord.Embed(description="No characters yet!",color=0x5d6bb5))
-        medals=["🥇","🥈","🥉"]
-        lines=[]
-        for i,r in enumerate(rows):
-            m=ctx.guild.get_member(r["user_id"])
+        """, ctx.guild.id)
+        if not rows:
+            return await tr_send(ctx, discord.Embed(description="No characters yet!", color=0x5d6bb5))
+        medals = ["🥇","🥈","🥉"]
+        lines  = []
+        for i, r in enumerate(rows):
+            m = ctx.guild.get_member(r["user_id"])
             if not m: continue
-            realm,rem=get_realm(r["realm_level"])
+            realm, rem = get_realm(r["realm_level"])
             lines.append(f"{medals[i] if i<3 else f'`{i+1}`'} **{m.display_name}** — {r['class']} · {rem} {realm} · Power **{r['power']}**")
-        e=discord.Embed(title="⚔️ RPG Power Leaderboard",description="\n".join(lines) or "No data.",color=0x5d6bb5)
-        await ctx.send(embed=e)
+        e = discord.Embed(title="⚔️ RPG Power Leaderboard", description="\n".join(lines) or "No data.", color=0x5d6bb5)
+        await tr_send(ctx, e)

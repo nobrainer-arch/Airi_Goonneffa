@@ -16,6 +16,7 @@ from .classes import CLASSES
 from .skills  import SKILL_DB
 from .battle_image import generate_battle_card
 from .quests import calc_run_rating, RATING_EMOJI, RATING_COLOR, check_quest_progress
+from airi.i18n import tr_send, tr_edit
 
 DND_API     = "https://www.dnd5eapi.co/api"
 BASE_CD     = 60      # 1 minute cooldown
@@ -615,15 +616,17 @@ class FloorBattleView(discord.ui.View):
             ),
             color=RATING_COLOR.get(run.run_rating, 0xffd700),
         )
-        try: await inter.followup.send(embed=summ)
+        try:
+            await tr_send(inter, summ, followup=True)
         except: pass
         if cr.get("leveled_up"):
             try:
-                u=inter.user if hasattr(inter,"user") else inter.author
-                await inter.followup.send(embed=discord.Embed(
+                u = inter.user if hasattr(inter, "user") else inter.author
+                lvl_embed = discord.Embed(
                     title="⬆️ LEVEL UP!",
-                    description="**"+u.display_name+"** reached character **Level "+str(cr.get("new_level"))+"**!",
-                    color=0xf1c40f))
+                    description=f"**{u.display_name}** reached character **Level {cr.get('new_level')}**!",
+                    color=0xf1c40f)
+                await tr_send(inter, lvl_embed, followup=True)
             except: pass
 
     @discord.ui.button(label="⚔️ Attack", style=discord.ButtonStyle.danger,    row=0)

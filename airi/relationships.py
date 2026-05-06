@@ -7,6 +7,7 @@ import db
 from utils import _err, C_REL, C_ERROR, C_WARN, C_SUCCESS, is_mod
 from airi.guild_config import check_channel, get_court_channel, is_judge
 from airi.economy import add_coins, get_balance
+from airi.i18n import tr_send
 
 HOOKUP_MINIMUM  = 200
 PROPOSAL_TIMEOUT = 3600
@@ -211,23 +212,24 @@ class _CheatingResolutionView(discord.ui.View):
                     except Exception: pass
 
     async def on_timeout(self):
-        await self._finalise_timeout()
-
-    async def _finalise_timeout(self):
-        await db.pool.execute(
-            "UPDATE relationships SET status='ended' WHERE id=$1", self._rel_id
-        )
-        e = discord.Embed(
-            description="💔 No response received in 24 hours — the relationship has ended.",
-            color=C_ERROR,
-        )
-        guild = self._bot.get_guild(self._guild_id)
-        if guild:
-            for uid in (self._cheater, self._partner):
-                m = guild.get_member(uid)
-                if m:
-                    try: await m.send(embed=e)
-                    except Exception: pass
+        # If one partner already voted 'continue' but the other didn't respond,
+        # still end the relationship — silence is treated as no consent to continue.
+        # But if BOTH already voted 'continue', _finalise already ran; avoid double-end.
+        if len(self._votes) < 2:
+            await db.pool.execute(
+                "UPDATE relationships SET status='ended' WHERE id=$1", self._rel_id
+            )
+            e = discord.Embed(
+                description="💔 No response from both partners within 24 hours — the relationship has ended.",
+                color=C_ERROR,
+            )
+            guild = self._bot.get_guild(self._guild_id)
+            if guild:
+                for uid in (self._cheater, self._partner):
+                    m = guild.get_member(uid)
+                    if m:
+                        try: await m.send(embed=e)
+                        except Exception: pass
 
     @discord.ui.button(label="💚 Continue", style=discord.ButtonStyle.success)
     async def continue_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -335,7 +337,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         if not await check_channel(ctx, "relationship"): return
         e = discord.Embed(title="💕 Propose Relationship", description="Choose the type of proposal:", color=C_REL)
         view = ProposeTypeView(self, ctx)
-        await ctx.send(embed=e, view=view)
+        await tr_send(ctx, e, view=view)
 
     @propose.command(name="dating")
     async def propose_dating(self, ctx, member: discord.Member):
@@ -415,7 +417,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
             color=C_REL,
         )
         e.set_thumbnail(url=member.display_avatar.url)
-        msg = await ctx.send(embed=e, view=view)
+        msg = await tr_send(ctx, e, view=view)
         try:
             ctx.bot.add_view(view, message_id=msg.id)
         except Exception:
@@ -431,7 +433,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
             e = discord.Embed(title="💔 Single",
                 description="You're not in a relationship.\n`!propose dating @user` to change that.",
                 color=C_WARN)
-            return await ctx.send(embed=e)
+            return await tr_send(ctx, e)
 
         partner_id = rel["user2_id"] if rel["user1_id"] == uid else rel["user1_id"]
         partner = ctx.guild.get_member(partner_id)
@@ -446,7 +448,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         if rel["type"] == "married":
             shared = await db.pool.fetchval("SELECT balance FROM shared_accounts WHERE relationship_id=$1", rel["id"])
             e.add_field(name="🏦 Shared Account", value=f"**{shared or 0:,} coins**", inline=False)
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     # ── Shared account ───────────────────────────────────────────
     @commands.hybrid_group(name="shared", description="Manage shared account", invoke_without_command=True)
@@ -461,7 +463,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         if not rel:
             return await _err(ctx, "You need to be married to use a shared account.")
         bal = await db.pool.fetchval("SELECT balance FROM shared_accounts WHERE relationship_id=$1", rel["id"]) or 0
-        await ctx.send(embed=discord.Embed(title="🏦 Shared Account", description=f"**{bal:,} coins**", color=C_REL))
+        await tr_send(ctx, discord.Embed(title="🏦 Shared Account", description=f"**{bal:,} coins**", color=C_REL))
 
     @shared.command(name="deposit")
     async def shared_deposit(self, ctx, amount: int):
@@ -476,7 +478,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
             return await _err(ctx, f"You only have **{bal:,} coins**.")
         await add_coins(gid, uid, -amount)
         await db.pool.execute("UPDATE shared_accounts SET balance=balance+$1 WHERE relationship_id=$2", amount, rel["id"])
-        await ctx.send(embed=discord.Embed(description=f"💰 Deposited **{amount:,} coins** into shared account.", color=C_REL))
+        await tr_send(ctx, discord.Embed(description=f"💰 Deposited **{amount:,} coins** into shared account.", color=C_REL))
 
     @shared.command(name="withdraw")
     async def shared_withdraw(self, ctx, amount: int):
@@ -490,10 +492,10 @@ class RelationshipCog(commands.Cog, name="Relationships"):
         if shared_bal < amount: return await _err(ctx, f"Shared account only has **{shared_bal:,} coins**.")
         await add_coins(gid, uid, amount)
         await db.pool.execute("UPDATE shared_accounts SET balance=balance-$1 WHERE relationship_id=$2", amount, rel["id"])
-        await ctx.send(embed=discord.Embed(description=f"💸 Withdrew **{amount:,} coins** from shared account.", color=C_REL))
+        await tr_send(ctx, discord.Embed(description=f"💸 Withdrew **{amount:,} coins** from shared account.", color=C_REL))
 
     # ── End relationship / Divorce ───────────────────────────────
-    @commands.group(name="endrel", invoke_without_command=True, aliases=["breakup"])
+    @commands.hybrid_group(name="endrel", invoke_without_command=True, aliases=["breakup"])
     async def endrel(self, ctx):
         """End a hookup or dating relationship instantly."""
         if ctx.invoked_subcommand is not None:
@@ -512,7 +514,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
             description=f"**{ctx.author.display_name}** ended the relationship with {partner.mention if partner else f'<@{partner_id}>'}.",
             color=C_WARN
         )
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     @endrel.command(name="court")
     async def endrel_court(self, ctx, *, reason: str = "No reason given"):
@@ -606,7 +608,7 @@ class RelationshipCog(commands.Cog, name="Relationships"):
                 description=f"Judge {ctx.author.mention} dismissed the case. The marriage continues.",
                 color=C_SUCCESS,
             )
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     # ── Cheating detection ───────────────────────────────────────
     async def log_cheating(self, guild_id, cheater_id, partner_id, target_id, guild):

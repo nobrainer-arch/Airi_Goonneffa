@@ -209,28 +209,30 @@ class RecipientSelect(discord.ui.UserSelect):
             from airi.gender import get_gender
             ag = await get_gender(str(self._author)) or "u"
 
-            # Edit the original picker message with the result embed
-            # so no ephemeral spam
             await interaction.response.defer()
 
-            sent_any = False
+            sent_any   = False
+            error_shown = False   # track if we already showed an error
             first_embed = None
             first_view  = None
 
             for member in self.values:
                 if member.bot:
                     await interaction.followup.send("❌ Bots can't be targeted.", ephemeral=True)
+                    error_shown = True
                     continue
                 if self._is_nsfw:
                     if await db.pool.fetchval("SELECT 1 FROM nsfw_optout WHERE guild_id=$1 AND user_id=$2",
                                               interaction.guild.id, member.id):
                         await interaction.followup.send(f"**{member.display_name}** has NSFW opt-out.", ephemeral=True)
+                        error_shown = True
                         continue
                 elif await db.pool.fetchval(
                     "SELECT 1 FROM rpblock WHERE guild_id=$1 AND user_id=$2 AND blocked_id=$3",
                     interaction.guild.id, member.id, self._author
                 ):
                     await interaction.followup.send(f"**{member.display_name}** blocked you from RP.", ephemeral=True)
+                    error_shown = True
                     continue
 
                 await _increment_action_counter(interaction, self._cmd, member)
@@ -238,22 +240,23 @@ class RecipientSelect(discord.ui.UserSelect):
                 tg      = await get_gender(str(member.id)) or "u"
                 raw     = _get_action_text(self._cmd, ag, tg)
                 action  = raw.format(author=interaction.user.display_name, target=member.mention)
-                # Append any pending text from the original command invocation
                 pending_txt = getattr(self.view, "pending_text", "") if self.view else ""
-                if pending_txt: action = action.rstrip("!.~") + " " + pending_txt.strip()
-                gif_url, _ = await get_gif(self._cmd, self._is_nsfw, user_id=getattr(interaction,"user",None) and interaction.user.id)
-                if not gif_url:
-                    await interaction.followup.send(f"Couldn't fetch a GIF for `{self._cmd}`.", ephemeral=True)
-                    continue
+                if pending_txt:
+                    action = action.rstrip("!.~") + " " + pending_txt.strip()
 
-                e    = await _build_embed(self._bot, interaction, action, gif_url, self._cmd, interaction.user, target_member=member)
-                bv   = BackView(self._cmd, member.id, self._author, self._bot) if self._cmd in config.BACK_ACTIONS else None
+                gif_url, _ = await get_gif(self._cmd, self._is_nsfw, user_id=interaction.user.id)
+                if not gif_url:
+                    # Don't double-error — just send what we can without a GIF
+                    gif_url = ""   # embed still works, just no image
+
+                e  = await _build_embed(self._bot, interaction, action, gif_url, self._cmd,
+                                        interaction.user, target_member=member)
+                bv = BackView(self._cmd, member.id, self._author, self._bot) \
+                     if self._cmd in config.BACK_ACTIONS else None
 
                 if first_embed is None:
-                    # Replace picker msg with first result
                     first_embed = e; first_view = bv
                 else:
-                    # Additional targets → new message
                     if bv: await interaction.followup.send(embed=e, view=bv)
                     else:  await interaction.followup.send(embed=e)
                 sent_any = True
@@ -264,8 +267,10 @@ class RecipientSelect(discord.ui.UserSelect):
                 except Exception:
                     if first_view: await interaction.followup.send(embed=first_embed, view=first_view)
                     else:          await interaction.followup.send(embed=first_embed)
-            elif not sent_any:
+            elif not sent_any and not error_shown:
+                # Only show this if nothing happened at all — no specific error was shown
                 await interaction.followup.send("No valid targets could be processed.", ephemeral=True)
+
         except Exception as err:
             print(f"RecipientSelect callback error for {self._cmd}: {err}")
             try:

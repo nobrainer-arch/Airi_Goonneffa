@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import db
 from airi.guild_config import get_market_channel
 from airi.economy import add_coins, get_balance
+from airi.i18n import tr_send
 from utils import _err, C_SOCIAL, C_WARN, C_SUCCESS, C_ERROR, C_ECONOMY
 
 ESCROW_COLOR  = 0x1a1a2e
@@ -308,7 +309,7 @@ class MarketplaceCog(commands.Cog, name="Marketplace"):
             gid
         )
         if not rows:
-            return await ctx.send(embed=discord.Embed(
+            return await tr_send(ctx, discord.Embed(
                 description="No active waifu listings. Use `!wlist @waifu <min_bid>` to list one!",
                 color=C_SOCIAL
             ))
@@ -323,7 +324,7 @@ class MarketplaceCog(commands.Cog, name="Marketplace"):
                       (f"\n→ [Go to listing](https://discord.com/channels/{gid}/{r['channel_id']}/{r['message_id']})" if r["message_id"] else ""),
                 inline=True,
             )
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
 
 async def _do_wlist(bot, guild, channel, author, member, min_bid, buyout_price):

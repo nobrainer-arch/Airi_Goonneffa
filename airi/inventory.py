@@ -4,6 +4,7 @@ from discord.ext import commands
 import asyncio
 import db
 from utils import _err, C_GACHA
+from airi.i18n import tr_send
 from airi.guild_config import check_channel, get_market_channel
 
 ITEMS: dict[str, dict] = {
@@ -27,9 +28,7 @@ ITEMS: dict[str, dict] = {
     "mana_potion":    {"name": "💙 Mana Potion",            "rarity": "uncommon",  "tradable": True},
     "antidote":       {"name": "🌿 Antidote",               "rarity": "common",    "tradable": True},
     "revival_orb":    {"name": "✨ Revival Orb",            "rarity": "rare",      "tradable": False},
-    "antidote":       {"name": "💊 Antidote",               "rarity": "common",    "tradable": True},
     "elixir":         {"name": "⚡ Elixir of Strength",    "rarity": "rare",      "tradable": True},
-    "revival_orb":    {"name": "💫 Revival Orb",           "rarity": "epic",      "tradable": True},
     "luck_charm":     {"name": "🍀 Lucky Charm",           "rarity": "rare",      "tradable": True},
     "speed_boots":    {"name": "👢 Boots of Swiftness",    "rarity": "rare",      "tradable": True},
     "mage_robe":      {"name": "🔮 Arcane Robe",           "rarity": "rare",      "tradable": True},
@@ -124,10 +123,29 @@ async def _use_item(interaction: discord.Interaction, gid: int, uid: int, item_k
         """, gid, uid)
         msg = "📜 **Prenup Doc** added. Attach it when proposing marriage."
     elif key in ("waifu_ticket", "waifu_ticket_3"):
+        # Feature not yet live — refund item so users don't lose it
+        await add_item(gid, uid, key, 1)
         qty_bonus = 3 if key == "waifu_ticket_3" else 1
-        msg = f"🎟️ Waifu Ticket ×{qty_bonus} — *claim feature coming soon!*"
+        msg = f"🎟️ Waifu Ticket ×{qty_bonus} — claim feature coming soon! Item refunded, nothing consumed."
     elif key == "biz_boost_2h":
-        msg = "🏭 **Business Boost** applied for 2 hours!"
+        from datetime import timedelta
+        until = datetime.now(timezone.utc) + timedelta(hours=2)
+        biz = await db.pool.fetchrow(
+            "SELECT id FROM businesses WHERE guild_id=$1 AND owner_id=$2", gid, uid
+        )
+        if biz:
+            # boost_until column added in db migration; gracefully skip if missing
+            try:
+                await db.pool.execute(
+                    "UPDATE businesses SET boost_until=$1 WHERE id=$2", until, biz["id"]
+                )
+                msg = "🏭 **Business Boost** active for 2 hours — income doubled next collection!"
+            except Exception:
+                await add_item(gid, uid, key, 1)
+                msg = "⚠️ Business boost column not yet available. Item refunded."
+        else:
+            await add_item(gid, uid, key, 1)
+            msg = "⚠️ You don't own a business. Item refunded."
     # ── HP / Mana potions (work outside combat too) ──────────────────
     elif key in ("hp_potion_s", "hp_potion_m", "hp_potion_l"):
         pct = {"hp_potion_s": 0.20, "hp_potion_m": 0.40, "hp_potion_l": 0.70}[key]
@@ -351,7 +369,7 @@ class InventoryCog(commands.Cog, name="Inventory"):
         items = await get_inventory(gid, uid)
         if not items:
             name = target.display_name if target else f"<@{uid}>"
-            await ctx.send(embed=discord.Embed(
+            await tr_send(ctx, discord.Embed(
                 description=("Your" if uid == ctx.author.id else f"{name}'s") + " inventory is empty.",
                 color=C_GACHA
             ))
@@ -362,7 +380,7 @@ class InventoryCog(commands.Cog, name="Inventory"):
         chunk = pages[page]
         embed = _build_inv_embed(chunk, target, page, len(pages))
         view = InventoryView(chunk, gid, uid, page, len(pages), self.bot)
-        await ctx.send(embed=embed, view=view)
+        await tr_send(ctx, embed, view=view)
 
     @commands.hybrid_command()
     async def use(self, ctx, item_key: str):
@@ -402,4 +420,4 @@ class InventoryCog(commands.Cog, name="Inventory"):
             description=f"You have ×{qty}. This will consume 1.",
             color=C_GACHA
         )
-        await ctx.send(embed=embed, view=ConfirmView())
+        await tr_send(ctx, embed, view=ConfirmView())

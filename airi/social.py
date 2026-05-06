@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 from datetime import datetime, timedelta, timezone
 import db
+from airi.i18n import tr_send
 from utils import _err, C_SOCIAL, C_ECONOMY, C_SUCCESS, C_WARN
 from airi.guild_config import check_channel, get_channel, K_PROFILE
 
@@ -219,7 +220,7 @@ class SocialCog(commands.Cog, name="Social"):
                     await inter.response.defer()
                     await cog.mywaifu(FC(), target)
 
-        await ctx.send(embed=e, view=ProfileView())
+        await tr_send(ctx, e, view=ProfileView())
 
     # ── Rep ───────────────────────────────────────────────────────
     @commands.hybrid_command(name="rep", aliases=["reputation"], description="Give someone reputation")
@@ -239,7 +240,7 @@ class SocialCog(commands.Cog, name="Social"):
             sel.callback = cb
             class v(discord.ui.View):
                 def __init__(self_): super().__init__(timeout=120); self_.add_item(sel)
-            return await ctx.send(embed=discord.Embed(description="Give rep to:", color=C_SOCIAL), view=v())
+            return await tr_send(ctx, discord.Embed(description="Give rep to:", color=C_SOCIAL), view=v())
         await self._do_rep(ctx, member)
 
     async def _do_rep(self, ctx, member: discord.Member):
@@ -257,7 +258,7 @@ class SocialCog(commands.Cog, name="Social"):
                 return await _err(ctx, f"Give rep again in **{h}h {s//60}m**.")
         await db.pool.execute("INSERT INTO social (guild_id,user_id,last_rep_given) VALUES ($1,$2,$3) ON CONFLICT (guild_id,user_id) DO UPDATE SET last_rep_given=$3", gid, ctx.author.id, now)
         new_rep = await db.pool.fetchval("INSERT INTO social (guild_id,user_id,rep) VALUES ($1,$2,1) ON CONFLICT (guild_id,user_id) DO UPDATE SET rep=social.rep+1 RETURNING rep", gid, member.id)
-        await ctx.send(embed=discord.Embed(description=f"⭐ {ctx.author.mention} gave rep to {member.mention}! They now have **{new_rep}** rep.", color=C_SOCIAL))
+        await tr_send(ctx, discord.Embed(description=f"⭐ {ctx.author.mention} gave rep to {member.mention}! They now have **{new_rep}** rep.", color=C_SOCIAL))
 
     # ── Claim ─────────────────────────────────────────────────────
     @commands.hybrid_command(name="claim", description="Claim someone as your waifu")
@@ -277,7 +278,7 @@ class SocialCog(commands.Cog, name="Social"):
             sel.callback = cb
             class v(discord.ui.View):
                 def __init__(self_): super().__init__(timeout=120); self_.add_item(sel)
-            return await ctx.send(embed=discord.Embed(description="Claim who as your waifu?", color=C_SOCIAL), view=v())
+            return await tr_send(ctx, discord.Embed(description="Claim who as your waifu?", color=C_SOCIAL), view=v())
         await self._do_claim(ctx, member)
 
     async def _do_claim(self, ctx, member: discord.Member):
@@ -316,7 +317,7 @@ class SocialCog(commands.Cog, name="Social"):
                 await inter.response.edit_message(content="Cancelled.", view=self_)
                 self_.stop()
 
-        await ctx.send(embed=discord.Embed(description=f"Claim **{member.display_name}** for **{CLAIM_COST:,}** coins?", color=C_SOCIAL), view=ConfirmView())
+        await tr_send(ctx, discord.Embed(description=f"Claim **{member.display_name}** for **{CLAIM_COST:,}** coins?", color=C_SOCIAL), view=ConfirmView())
 
     # ── Release ───────────────────────────────────────────────────
     @commands.hybrid_command(name="release", description="Release a claimed waifu")
@@ -344,7 +345,7 @@ class SocialCog(commands.Cog, name="Social"):
                 def __init__(self_): super().__init__(timeout=120); self_.add_item(sel)
             return await ctx.send("Release which waifu?", view=v())
         await db.pool.execute("DELETE FROM claims WHERE guild_id=$1 AND claimer_id=$2 AND claimed_id=$3", gid, uid, member.id)
-        await ctx.send(embed=discord.Embed(description=f"💔 {ctx.author.mention} released **{member.display_name}**.", color=C_WARN))
+        await tr_send(ctx, discord.Embed(description=f"💔 {ctx.author.mention} released **{member.display_name}**.", color=C_WARN))
 
     # ── My Waifu ──────────────────────────────────────────────────
     @commands.hybrid_command(name="mywaifu", aliases=["harem","mywaifus"], description="View your waifu harem")
@@ -355,10 +356,11 @@ class SocialCog(commands.Cog, name="Social"):
         rows = await db.pool.fetch("SELECT claimed_id, claimed_at FROM claims WHERE guild_id=$1 AND claimer_id=$2 ORDER BY claimed_at DESC", gid, uid)
         if not rows:
             whose = "You have" if target == ctx.author else f"{target.display_name} has"
-            return await ctx.send(embed=discord.Embed(description=f"{whose} no waifus. Use `!claim @user`!", color=C_WARN))
+            suffix = " Use `!claim @user` to claim someone!" if target == ctx.author else ""
+            return await tr_send(ctx, discord.Embed(description=f"{whose} no waifus.{suffix}", color=C_WARN))
         rows_list = [dict(r) for r in rows]
         view = HaremView(rows_list, target, ctx.author.id)
-        await ctx.send(embed=view.build(0), view=view)
+        await tr_send(ctx, view.build(0), view=view)
 
     # ── Waifu info ────────────────────────────────────────────────
     @commands.hybrid_command(name="waifu", description="Check someone's waifu status")
@@ -376,7 +378,7 @@ class SocialCog(commands.Cog, name="Social"):
                 def __init__(self_): super().__init__(timeout=120); self_.add_item(sel)
             return await ctx.send("Check waifu status of:", view=v())
         e = await self._waifu_embed(ctx.guild, member, ctx.author)
-        await ctx.send(embed=e)
+        await tr_send(ctx, e)
 
     async def _waifu_embed(self, guild, target, viewer):
         gid, tid = guild.id, target.id
@@ -411,7 +413,7 @@ class SocialCog(commands.Cog, name="Social"):
                 for i in self_.children: i.disabled = True
                 await inter.response.edit_message(content="✅ NSFW opt-out removed. You can receive NSFW actions.", view=self_)
         status = "🔞 Currently opted **OUT** of NSFW" if exists else "✅ Currently opted **IN** to NSFW"
-        await ctx.send(embed=discord.Embed(description=status, color=C_SOCIAL), view=ToggleView(), ephemeral=True)
+        await tr_send(ctx, discord.Embed(description=status, color=C_SOCIAL), view=ToggleView(), ephemeral=True)
 
     # ── Leaderboard ───────────────────────────────────────────────
     @commands.hybrid_command(name="leaderboard", aliases=[], description="View server leaderboards")
@@ -429,7 +431,7 @@ class SocialCog(commands.Cog, name="Social"):
         class LBView(discord.ui.View):
             def __init__(self_): super().__init__(timeout=300); self_.add_item(sel)
         view = LBView()
-        await ctx.send(embed=e, view=view)
+        await tr_send(ctx, e, view=view)
 
     # ── Rel opt-out ───────────────────────────────────────────────
     @commands.hybrid_command(name="reloptout", description="Toggle relationship command opt-out")
@@ -451,4 +453,4 @@ class SocialCog(commands.Cog, name="Social"):
                 for i in self_.children: i.disabled = True
                 await inter.response.edit_message(content="✅ Opted in to relationship commands.", view=self_)
         status = "Currently opted **OUT**" if exists else "Currently opted **IN**"
-        await ctx.send(embed=discord.Embed(description=f"💍 Relationship commands: {status}", color=C_SOCIAL), view=TV(), ephemeral=True)
+        await tr_send(ctx, discord.Embed(description=f"💍 Relationship commands: {status}", color=C_SOCIAL), view=TV(), ephemeral=True)

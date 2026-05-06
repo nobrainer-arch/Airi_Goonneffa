@@ -12,3 +12,5 @@ local_render.py
 railway_local.py
 d.py
 t.py
+db_migrate.py
+.gitignore
